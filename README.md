@@ -5,7 +5,7 @@
   <p>A terminal-first music player written in Rust, designed around declarative, versionable playlists.</p>
 
   <p>
-    <a href="https://github.com/Nicolas25vlad/riff/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Nicolas25vlad/riff/actions/workflows/ci.yml/badge.svg" /></a>
+    <a href="https://github.com/Nicolas25vlad/riff/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI" src="https://github.com/Nicolas25vlad/riff/actions/workflows/ci.yml/badge.svg?branch=main" /></a>
     <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-orange?logo=rust" />
     <img alt="License" src="https://img.shields.io/github/license/Nicolas25vlad/riff" />
     <img alt="Status" src="https://img.shields.io/badge/status-early%20development-yellow" />
