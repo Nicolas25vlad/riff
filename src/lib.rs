@@ -14,11 +14,15 @@ impl Command {
         match args {
             [] => Ok(Self::Help),
             [flag] if flag == "-h" || flag == "--help" || flag == "help" => Ok(Self::Help),
-            [flag] if flag == "-V" || flag == "--version" || flag == "version" => Ok(Self::Version),
+            [flag] if flag == "-V" || flag == "--version" || flag == "version" => {
+                Ok(Self::Version)
+            }
             [cmd] if cmd == "doctor" => Ok(Self::Doctor),
             [cmd, path] if cmd == "validate" => Ok(Self::Validate(path.into())),
             [cmd, path] if cmd == "inspect" => Ok(Self::Inspect(path.into())),
-            _ => Err(RiffError::Usage("unknown command or invalid arguments".into())),
+            _ => Err(RiffError::Usage(
+                "unknown command or invalid arguments".into(),
+            )),
         }
     }
 }
@@ -31,8 +35,13 @@ pub struct Playlist {
 
 impl Playlist {
     pub fn parse(source: &str) -> Result<Self, RiffError> {
-        let mut lines = source.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#'));
-        let header = lines.next().ok_or_else(|| RiffError::Parse("missing playlist declaration".into()))?;
+        let mut lines = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'));
+        let header = lines
+            .next()
+            .ok_or_else(|| RiffError::Parse("missing playlist declaration".into()))?;
 
         if !header.starts_with("playlist ") || !header.ends_with('{') {
             return Err(RiffError::Parse("expected `playlist \"name\" {`".into()));
@@ -67,7 +76,9 @@ impl Playlist {
                 continue;
             }
 
-            return Err(RiffError::Parse(format!("unsupported statement: `{line}`")));
+            return Err(RiffError::Parse(format!(
+                "unsupported statement: `{line}`"
+            )));
         }
 
         if !closed {
@@ -109,7 +120,11 @@ pub fn run(command: Command) -> Result<String, RiffError> {
         Command::Validate(path) => {
             let source = fs::read_to_string(&path)?;
             let playlist = Playlist::parse(&source)?;
-            Ok(format!("✓ {} is valid ({} tracks)", playlist.name, playlist.tracks.len()))
+            Ok(format!(
+                "✓ {} is valid ({} tracks)",
+                playlist.name,
+                playlist.tracks.len()
+            ))
         }
         Command::Inspect(path) => {
             let source = fs::read_to_string(&path)?;
@@ -121,7 +136,12 @@ pub fn run(command: Command) -> Result<String, RiffError> {
                 .map(|(index, track)| format!("{:>3}. {track}", index + 1))
                 .collect::<Vec<_>>()
                 .join("\n");
-            Ok(format!("{}\n{} tracks\n\n{}", playlist.name, playlist.tracks.len(), body))
+            Ok(format!(
+                "{}\n{} tracks\n\n{}",
+                playlist.name,
+                playlist.tracks.len(),
+                body
+            ))
         }
     }
 }
