@@ -1,0 +1,7 @@
+# Riff playlist example
+playlist "coding-metal" {
+    track "Black Sabbath - War Pigs"
+    track "Dio - Holy Diver"
+    track "Metallica - Orion"
+    track "Megadeth - Tornado of Souls"
+}

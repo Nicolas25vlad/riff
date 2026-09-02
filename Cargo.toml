@@ -2,5 +2,12 @@
 name = "riff"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal-first music player where playlists are code."
+license = "MIT"
+repository = "https://github.com/Nicolas25vlad/riff"
+homepage = "https://github.com/Nicolas25vlad/riff"
+readme = "README.md"
+keywords = ["music", "spotify", "terminal", "tui", "rust"]
+categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
