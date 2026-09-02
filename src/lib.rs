@@ -55,7 +55,7 @@ impl Playlist {
         let mut tracks = Vec::new();
         let mut closed = false;
 
-        for line in lines {
+        for line in lines.by_ref() {
             if line == "}" {
                 closed = true;
                 break;
