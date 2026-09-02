@@ -14,9 +14,7 @@ impl Command {
         match args {
             [] => Ok(Self::Help),
             [flag] if flag == "-h" || flag == "--help" || flag == "help" => Ok(Self::Help),
-            [flag] if flag == "-V" || flag == "--version" || flag == "version" => {
-                Ok(Self::Version)
-            }
+            [flag] if flag == "-V" || flag == "--version" || flag == "version" => Ok(Self::Version),
             [cmd] if cmd == "doctor" => Ok(Self::Doctor),
             [cmd, path] if cmd == "validate" => Ok(Self::Validate(path.into())),
             [cmd, path] if cmd == "inspect" => Ok(Self::Inspect(path.into())),
@@ -76,9 +74,7 @@ impl Playlist {
                 continue;
             }
 
-            return Err(RiffError::Parse(format!(
-                "unsupported statement: `{line}`"
-            )));
+            return Err(RiffError::Parse(format!("unsupported statement: `{line}`")));
         }
 
         if !closed {
