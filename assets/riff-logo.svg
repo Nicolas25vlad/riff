@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="280" viewBox="0 0 960 280" role="img" aria-labelledby="title desc">
+  <title id="title">Riff logo</title>
+  <desc id="desc">A terminal-inspired Riff wordmark with an audio waveform.</desc>
+  <rect width="960" height="280" rx="32" fill="#0d1117"/>
+  <g transform="translate(72 56)" fill="none" stroke="#7ee787" stroke-width="12" stroke-linecap="round">
+    <path d="M0 84h24l18-44 28 88 28-120 28 152 28-104 28 56 18-28h28"/>
+  </g>
+  <text x="330" y="148" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="104" font-weight="700" letter-spacing="8">RIFF</text>
+  <text x="334" y="202" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="26">music as code • terminal first</text>
+</svg>
