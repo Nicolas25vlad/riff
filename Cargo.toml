@@ -11,3 +11,8 @@ keywords = ["music", "spotify", "terminal", "tui", "rust"]
 categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
