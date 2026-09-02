@@ -14,6 +14,27 @@
 
 ---
 
+## Install
+
+On Linux, install the latest build from `main` in one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.sh | bash
+```
+
+Then:
+
+```bash
+riff doctor
+riff init
+riff validate playlist.riff
+riff inspect playlist.riff
+```
+
+> Using Fish and `riff` is not found after installation? Run `fish_add_path $HOME/.cargo/bin` once.
+
+For manual installation, updates, uninstall instructions and building from source, see [INSTALL.md](INSTALL.md).
+
 ## What is Riff?
 
 Riff is an experiment in treating your music library the way developers treat infrastructure and configuration.
@@ -47,18 +68,14 @@ The long-term goal is a complete terminal music experience powered by Rust, `lib
 
 ## Why?
 
-Spotify playlists are useful, but they are mostly opaque application state. Riff explores a different model:
-
 - **Playlists as source code**: readable text files with deterministic ordering.
 - **Git-native music libraries**: branch, diff, review, fork and share playlists like code.
 - **Terminal-first playback**: search, queue, play, pause and navigate without leaving your shell.
-- **Native Spotify playback**: use `librespot` so Riff can eventually act as its own Spotify Connect device.
+- **Native Spotify playback**: `librespot` is planned as the playback and Spotify Connect engine.
 - **Rich terminal UI**: album artwork, queue management, playback state and audio visualization.
-- **Provider-independent core**: Spotify first, without making the playlist language permanently Spotify-specific.
+- **Provider-independent core**: Spotify first, without permanently coupling the language to Spotify.
 
 ## Vision
-
-The end state should feel less like a thin Spotify wrapper and more like a tiny music operating environment for the terminal.
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
@@ -73,14 +90,14 @@ The end state should feel less like a thin Spotify wrapper and more like a tiny 
 │ Queue                                                        │
 │ > War Pigs                                                   │
 │   Holy Diver                                                 │
-│   Orion                                                       │
+│   Orion                                                      │
 │   Tornado of Souls                                           │
 ├──────────────────────────────────────────────────────────────┤
 │ j/k move   space pause   n next   / search   : command       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The audio path is planned around decoded PCM from `librespot`, which lets playback and visualization share the same stream:
+Planned audio path:
 
 ```text
 .riff files
@@ -105,21 +122,22 @@ The audio path is planned around decoded PCM from `librespot`, which lets playba
 
 ## Current status
 
-Riff is in **early development**. The repository currently contains the first intentionally small foundation:
+Riff is in **early development**. Today it includes:
 
 - a dependency-free Rust CLI core;
+- `riff init [file]`;
 - `riff doctor`;
 - `riff validate <file>`;
 - `riff inspect <file>`;
-- the first parser for the `.riff` playlist format;
+- the first `.riff` playlist parser;
 - parser tests;
-- CI for formatting, Clippy, tests and `cargo check`.
+- CI for installer syntax, formatting, Clippy, tests and `cargo check`.
 
-There is no Spotify playback yet. The initial parser is deliberately tiny so the language can evolve from a clear grammar instead of accreting random syntax.
+Spotify playback is not implemented yet.
 
 ## Planned playlist language
 
-The current implementation only supports explicit `track` statements. The eventual language is intended to become expressive enough to describe both static playlists and reproducible selection rules.
+The current implementation supports explicit `track` statements. The language is intended to grow toward reproducible selection rules:
 
 ```riff
 playlist "night-shift" {
@@ -135,9 +153,7 @@ playlist "night-shift" {
 }
 ```
 
-The important property is reproducibility. A seeded or otherwise deterministic playlist definition should resolve to the same ordering when possible.
-
-Eventually, Riff should be able to show playlist changes before applying them:
+Eventually Riff should preview changes before applying them:
 
 ```diff
 coding-metal
@@ -149,11 +165,6 @@ coding-metal
 Plan: 2 to add, 1 to remove, 4 to reorder
 ```
 
-```console
-$ riff apply
-✓ coding-metal synchronized
-```
-
 Yes, the aspiration is essentially **Terraform for playlists**, with significantly more guitar riffs.
 
 ## CLI
@@ -161,6 +172,7 @@ Yes, the aspiration is essentially **Terraform for playlists**, with significant
 Available today:
 
 ```text
+riff init [file]
 riff doctor
 riff validate <file>
 riff inspect <file>
@@ -168,7 +180,7 @@ riff help
 riff version
 ```
 
-Planned commands include:
+Planned:
 
 ```text
 riff play [playlist|track]
@@ -178,46 +190,14 @@ riff previous
 riff search <query>
 riff queue add <query>
 riff status
+riff plan
 riff apply
 riff tui
 ```
 
-## Getting started
-
-### Requirements
-
-- Rust stable with Cargo
-- Git
-
-Clone and run:
-
-```bash
-git clone https://github.com/Nicolas25vlad/riff.git
-cd riff
-cargo run -- doctor
-```
-
-Try the example playlist:
-
-```bash
-cargo run -- validate examples/coding-metal.riff
-cargo run -- inspect examples/coding-metal.riff
-```
-
-Run the quality suite:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo check --all-targets --all-features
-```
-
 ## Architecture
 
-The project is intentionally still a single crate while its public concepts settle. Splitting into a workspace too early would freeze boundaries we have not earned yet.
-
-The intended evolution is roughly:
+Riff is intentionally still a single crate while its public concepts settle. The intended evolution is roughly:
 
 ```text
 riff/
@@ -232,8 +212,6 @@ riff/
 └── riff-tui          Ratatui application
 ```
 
-Likely technologies as the project grows:
-
 | Area | Direction |
 | --- | --- |
 | Language | Rust |
@@ -245,19 +223,18 @@ Likely technologies as the project grows:
 | Cover art | Kitty graphics / Sixel / Unicode fallback |
 | Playlist language | custom parser + typed AST |
 
-Nothing in that table should be considered a permanent dependency commitment yet. Riff should earn complexity one feature at a time.
-
 ## Roadmap
 
 ### v0.1 · Foundation
 
 - [x] Project identity and documentation
 - [x] Minimal CLI
+- [x] One-line Linux installer
 - [x] First `.riff` parser
 - [x] Playlist validation and inspection
 - [x] Unit tests and CI
-- [ ] Formalize the first grammar
-- [ ] Better diagnostics with line/column information
+- [ ] Formal grammar
+- [ ] Diagnostics with line/column information
 
 ### v0.2 · Spotify core
 
@@ -295,39 +272,24 @@ Nothing in that table should be considered a permanent dependency commitment yet
 
 ## Design principles
 
-1. **Terminal first, not terminal only.** The CLI should remain scriptable even when the TUI becomes rich.
+1. **Terminal first, not terminal only.** The CLI stays scriptable even when the TUI becomes rich.
 2. **Text files are the source of truth.** A playlist should be understandable without launching Riff.
-3. **Determinism where possible.** Music definitions should be reproducible enough to meaningfully version.
+3. **Determinism where possible.** Definitions should be reproducible enough to meaningfully version.
 4. **Fast startup matters.** A terminal player that feels heavy has missed the point.
-5. **Keep provider concerns isolated.** The language should describe music, not leak Spotify internals everywhere.
-6. **No architecture cosplay.** Crates, traits and abstractions appear when they solve real problems.
+5. **Keep provider concerns isolated.** The language describes music, not Spotify internals.
+6. **No architecture cosplay.** Abstractions appear when they solve real problems.
 
 ## Contributing
 
-Riff is extremely young, which means design discussion is currently as valuable as code.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests run the full quality gate automatically, and ownership rules live in `.github/CODEOWNERS`.
 
-Before implementing a large subsystem, open an issue describing the proposed behavior and how it fits the project. Small fixes, tests and documentation improvements can go directly to a pull request.
-
-Basic workflow:
-
-```bash
-git checkout -b feat/my-feature
-cargo fmt
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-```
-
-Please keep commits focused and prefer tests around parser behavior and state transitions.
-
-## Name
-
-A **riff** is a short musical phrase that gives a song identity. It also happens to be short, terminal-friendly, and looks suspiciously appropriate next to a Rust crab.
+For security reports, see [SECURITY.md](SECURITY.md).
 
 ## Disclaimer
 
 Riff is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Spotify AB. Spotify is a trademark of Spotify AB.
 
-Spotify-specific functionality planned for Riff may require Spotify Premium and will depend on the capabilities and compatibility of `librespot` and Spotify's services at the time of implementation.
+Spotify-specific functionality may require Spotify Premium and will depend on the capabilities and compatibility of `librespot` and Spotify's services at the time of implementation.
 
 ## License
 
