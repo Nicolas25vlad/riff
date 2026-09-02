@@ -2,6 +2,27 @@
 
 Riff is currently distributed straight from GitHub while the project is in early development.
 
+## One-line install (Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.sh | bash
+```
+
+The installer checks for the basic requirements, installs Riff through Cargo, and prints the exact PATH command if `$HOME/.cargo/bin` is not available in your current shell.
+
+For Fish, if needed:
+
+```fish
+fish_add_path $HOME/.cargo/bin
+```
+
+Verify the installation:
+
+```bash
+riff --version
+riff doctor
+```
+
 ## Install with Cargo
 
 Requirements:
@@ -25,13 +46,6 @@ For Fish:
 
 ```fish
 fish_add_path $HOME/.cargo/bin
-```
-
-Verify the installation:
-
-```bash
-riff --version
-riff doctor
 ```
 
 ## First run
@@ -78,6 +92,8 @@ Until packaged releases are available, update by reinstalling from GitHub:
 ```bash
 cargo install --git https://github.com/Nicolas25vlad/riff --locked --force
 ```
+
+You can also rerun the one-line installer. It uses `--force`, so an existing installation is replaced by the latest `main` build.
 
 ## Uninstall
 
