@@ -3,14 +3,12 @@ use std::{env, fs, io, path::PathBuf, time::Duration};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
-    core::{
-        authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
-    },
+    core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session},
     oauth::OAuthClientBuilder,
     playback::{
         audio_backend,
@@ -21,14 +19,14 @@ use librespot::{
     },
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
-    Frame, Terminal,
 };
-use riff::{player, Playlist};
+use riff::{Playlist, player};
 use tokio::sync::mpsc;
 
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
@@ -134,7 +132,12 @@ async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String> {
     let mut queue = Vec::with_capacity(playlist.tracks.len());
 
     for (index, track) in playlist.tracks.iter().enumerate() {
-        println!("  [{}/{}] {}", index + 1, playlist.tracks.len(), track.label);
+        println!(
+            "  [{}/{}] {}",
+            index + 1,
+            playlist.tracks.len(),
+            track.label
+        );
 
         let candidate = if let Some(uri) = track.id.as_deref() {
             player::inspect_track(uri).await?
@@ -215,7 +218,10 @@ async fn run_player(
         .activate()
         .map_err(|err| format!("could not activate Spotify Connect device: {err}"))?;
 
-    let uris = queue.iter().map(|item| item.uri.clone()).collect::<Vec<_>>();
+    let uris = queue
+        .iter()
+        .map(|item| item.uri.clone())
+        .collect::<Vec<_>>();
     spirc
         .load(LoadRequest::from_tracks(
             uris,
@@ -297,8 +303,8 @@ async fn run_terminal(
         .map_err(|err| format!("could not enter alternate screen: {err}"))?;
 
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)
-        .map_err(|err| format!("could not initialize terminal UI: {err}"))?;
+    let mut terminal =
+        Terminal::new(backend).map_err(|err| format!("could not initialize terminal UI: {err}"))?;
     terminal
         .clear()
         .map_err(|err| format!("could not clear terminal: {err}"))?;
@@ -325,8 +331,8 @@ async fn run_terminal(
             if event::poll(Duration::from_millis(50))
                 .map_err(|err| format!("could not poll terminal input: {err}"))?
             {
-                if let Event::Key(key) = event::read()
-                    .map_err(|err| format!("could not read terminal input: {err}"))?
+                if let Event::Key(key) =
+                    event::read().map_err(|err| format!("could not read terminal input: {err}"))?
                 {
                     if key.kind != KeyEventKind::Press {
                         continue;
@@ -373,8 +379,7 @@ fn apply_update(state: &mut AppState, update: PlayerUpdate) -> Result<(), String
                 PlaybackStatus::Stopped => "Playback stopped".to_string(),
             };
         }
-        PlayerUpdate::Track { uri, position_ms }
-        | PlayerUpdate::Position { uri, position_ms } => {
+        PlayerUpdate::Track { uri, position_ms } | PlayerUpdate::Position { uri, position_ms } => {
             state.current_uri = Some(uri);
             state.position_ms = position_ms;
         }
@@ -454,7 +459,11 @@ fn draw_now_playing(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Line::from(current),
     ])
     .wrap(Wrap { trim: true })
-    .block(Block::default().borders(Borders::ALL).title(" now playing "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" now playing "),
+    );
     frame.render_widget(now, rows[0]);
 
     let duration_ms = state.current().map(|item| item.duration_ms).unwrap_or(0);
