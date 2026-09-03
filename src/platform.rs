@@ -1,4 +1,7 @@
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use librespot::playback::audio_backend::{self, SinkBuilder};
 
@@ -44,8 +47,10 @@ pub fn spotify_cache_dir() -> Result<PathBuf, String> {
             .join("spotify"));
     }
 
-    Err("could not determine a cache directory; set XDG_CACHE_HOME or a platform home directory"
-        .to_string())
+    Err(
+        "could not determine a cache directory; set XDG_CACHE_HOME or a platform home directory"
+            .to_string(),
+    )
 }
 
 pub fn is_wsl() -> bool {
