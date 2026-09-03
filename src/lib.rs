@@ -1,4 +1,4 @@
-use std::{fmt, fs, path::PathBuf};
+use std::{fmt, fs, io, io::Write, path::PathBuf};
 
 pub mod player;
 
@@ -18,6 +18,9 @@ pub enum Command {
     Inspect(PathBuf),
     Play(PathBuf),
     Player(Option<String>),
+    Search { query: String, limit: usize },
+    InspectTrack(String),
+    Pick(String),
 }
 
 impl Command {
@@ -34,6 +37,26 @@ impl Command {
             [cmd, path] if cmd == "play" => Ok(Self::Play(path.into())),
             [cmd] if cmd == "player" => Ok(Self::Player(None)),
             [cmd, uri] if cmd == "player" => Ok(Self::Player(Some(uri.clone()))),
+            [cmd, query] if cmd == "search" => Ok(Self::Search {
+                query: query.clone(),
+                limit: 10,
+            }),
+            [cmd, query, flag, limit] if cmd == "search" && flag == "--limit" => {
+                let limit = limit.parse::<usize>().map_err(|_| {
+                    RiffError::Usage("search --limit must be a positive integer".into())
+                })?;
+                if limit == 0 {
+                    return Err(RiffError::Usage(
+                        "search --limit must be greater than zero".into(),
+                    ));
+                }
+                Ok(Self::Search {
+                    query: query.clone(),
+                    limit,
+                })
+            }
+            [cmd, uri] if cmd == "inspect-track" => Ok(Self::InspectTrack(uri.clone())),
+            [cmd, query] if cmd == "pick" => Ok(Self::Pick(query.clone())),
             _ => Err(RiffError::Usage(
                 "unknown command or invalid arguments".into(),
             )),
@@ -42,9 +65,15 @@ impl Command {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Track {
+    pub label: String,
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Playlist {
     pub name: String,
-    pub tracks: Vec<String>,
+    pub tracks: Vec<Track>,
 }
 
 impl Playlist {
@@ -72,12 +101,7 @@ impl Playlist {
                 .strip_prefix("track ")
                 .ok_or_else(|| RiffError::Parse(format!("unsupported statement: `{line}`")))?;
 
-            let track = parse_quoted(value, "track")?;
-            if track.is_empty() {
-                return Err(RiffError::Parse("track cannot be empty".into()));
-            }
-
-            tracks.push(track.to_string());
+            tracks.push(parse_track(value)?);
         }
 
         if !closed {
@@ -95,6 +119,43 @@ impl Playlist {
             tracks,
         })
     }
+}
+
+fn parse_track(value: &str) -> Result<Track, RiffError> {
+    let value = value.trim();
+    if !value.starts_with('"') {
+        return Err(RiffError::Parse(
+            "track must start with a quoted label".into(),
+        ));
+    }
+
+    let closing_quote = value[1..]
+        .find('"')
+        .map(|index| index + 1)
+        .ok_or_else(|| RiffError::Parse("track label is missing its closing quote".into()))?;
+    let label = &value[1..closing_quote];
+    if label.is_empty() {
+        return Err(RiffError::Parse("track cannot be empty".into()));
+    }
+
+    let rest = value[closing_quote + 1..].trim();
+    let id = if rest.is_empty() {
+        None
+    } else {
+        let raw_id = rest
+            .strip_prefix("id=")
+            .ok_or_else(|| RiffError::Parse(format!("unsupported track selector: `{rest}`")))?;
+        let id = parse_quoted(raw_id, "track id")?;
+        if id.is_empty() {
+            return Err(RiffError::Parse("track id cannot be empty".into()));
+        }
+        Some(id.to_string())
+    };
+
+    Ok(Track {
+        label: label.to_string(),
+        id,
+    })
 }
 
 fn parse_playlist_header(header: &str) -> Result<&str, RiffError> {
@@ -174,7 +235,10 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
                 .tracks
                 .iter()
                 .enumerate()
-                .map(|(index, track)| format!("{:>3}. {track}", index + 1))
+                .map(|(index, track)| match track.id.as_deref() {
+                    Some(id) => format!("{:>3}. {}\n     id: {id}", index + 1, track.label),
+                    None => format!("{:>3}. {}", index + 1, track.label),
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
 
@@ -204,7 +268,14 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
             );
 
             let options = player::PlayerOptions {
-                track_queries: playlist.tracks,
+                tracks: playlist
+                    .tracks
+                    .into_iter()
+                    .map(|track| player::TrackRequest {
+                        label: track.label,
+                        id: track.id,
+                    })
+                    .collect(),
                 ..player::PlayerOptions::default()
             };
             player::run(options).await.map_err(RiffError::Player)?;
@@ -218,7 +289,85 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
             player::run(options).await.map_err(RiffError::Player)?;
             Ok(String::new())
         }
+        Command::Search { query, limit } => {
+            let candidates = player::search(&query, limit)
+                .await
+                .map_err(RiffError::Player)?;
+            if candidates.is_empty() {
+                return Ok(format!("No Spotify tracks found for `{query}`."));
+            }
+            Ok(format_candidates(&query, &candidates))
+        }
+        Command::InspectTrack(uri) => {
+            let candidate = player::inspect_track(&uri)
+                .await
+                .map_err(RiffError::Player)?;
+            Ok(format_candidate_details(&candidate))
+        }
+        Command::Pick(query) => {
+            let candidates = player::search(&query, 10)
+                .await
+                .map_err(RiffError::Player)?;
+            if candidates.is_empty() {
+                return Ok(format!("No Spotify tracks found for `{query}`."));
+            }
+
+            println!("{}", format_candidates(&query, &candidates));
+            print!("\nChoose a recording [1-{}]: ", candidates.len());
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let selection = input
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|value| (1..=candidates.len()).contains(value))
+                .ok_or_else(|| RiffError::Usage("invalid recording selection".into()))?;
+            let candidate = &candidates[selection - 1];
+            Ok(format!(
+                "track \"{}\" id=\"{}\"",
+                escape_riff_string(&query),
+                candidate.uri
+            ))
+        }
     }
+}
+
+fn format_candidates(query: &str, candidates: &[player::SearchCandidate]) -> String {
+    let mut lines = vec![format!("Spotify recordings for `{query}`:")];
+    for (index, candidate) in candidates.iter().enumerate() {
+        lines.push(format!(
+            "\n{}. {}\n   id: {}",
+            index + 1,
+            candidate.display_name(),
+            candidate.uri
+        ));
+        for (key, value) in candidate.metadata.iter().take(6) {
+            lines.push(format!("   {key}: {value}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn format_candidate_details(candidate: &player::SearchCandidate) -> String {
+    let mut lines = vec![format!(
+        "{}\nid: {}",
+        candidate.display_name(),
+        candidate.uri
+    )];
+    if candidate.metadata.is_empty() {
+        lines.push("metadata: not returned by Spotify context resolver".to_string());
+    } else {
+        lines.push("metadata:".to_string());
+        for (key, value) in &candidate.metadata {
+            lines.push(format!("  {key}: {value}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn escape_riff_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn init(path: PathBuf) -> Result<String, RiffError> {
@@ -238,14 +387,14 @@ fn init(path: PathBuf) -> Result<String, RiffError> {
 
 pub fn help() -> String {
     format!(
-        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]       Create a starter playlist (default: playlist.riff)\n  doctor            Check the local Riff environment\n  validate <file>   Validate a .riff playlist\n  inspect <file>    Parse and print a .riff playlist\n  play <file>       Resolve a .riff playlist on Spotify and start playback\n  player [uri]      Start Riff as a local Spotify Connect player\n  help              Print this help\n  version           Print version",
+        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]         Create a starter playlist (default: playlist.riff)\n  doctor              Check the local Riff environment\n  validate <file>     Validate a .riff playlist\n  inspect <file>      Parse and print a .riff playlist\n  play <file>         Resolve a .riff playlist on Spotify and start playback\n  search <query>      Explore Spotify recordings and stable track IDs\n  inspect-track <id>  Inspect one Spotify track ID\n  pick <query>        Interactively choose a recording and print pinned DSL\n  player [uri]        Start Riff as a local Spotify Connect player\n  help                Print this help\n  version             Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
 
 fn doctor() -> String {
     format!(
-        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      player + .riff resolution available (Premium required)\n  playback     librespot / local audio backend",
+        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      player + discovery + pinned track ids available (Premium required)\n  playback     librespot / local audio backend",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
@@ -268,6 +417,25 @@ mod tests {
         let playlist = Playlist::parse(source).expect("playlist should parse");
         assert_eq!(playlist.name, "coding-metal");
         assert_eq!(playlist.tracks.len(), 2);
+        assert_eq!(playlist.tracks[0].label, "Black Sabbath - War Pigs");
+        assert_eq!(playlist.tracks[0].id, None);
+    }
+
+    #[test]
+    fn parses_pinned_track_id() {
+        let source = r#"
+            playlist "coding-metal" {
+                track "Black Sabbath - War Pigs" id="spotify:track:abc123"
+            }
+        "#;
+        let playlist = Playlist::parse(source).expect("playlist should parse");
+        assert_eq!(
+            playlist.tracks[0],
+            Track {
+                label: "Black Sabbath - War Pigs".to_string(),
+                id: Some("spotify:track:abc123".to_string())
+            }
+        );
     }
 
     #[test]
@@ -316,6 +484,23 @@ mod tests {
         assert_eq!(
             Command::parse(&args).expect("command should parse"),
             Command::Play(PathBuf::from("coding-metal.riff"))
+        );
+    }
+
+    #[test]
+    fn parses_search_limit() {
+        let args = vec![
+            "search".to_string(),
+            "War Pigs".to_string(),
+            "--limit".to_string(),
+            "20".to_string(),
+        ];
+        assert_eq!(
+            Command::parse(&args).expect("command should parse"),
+            Command::Search {
+                query: "War Pigs".to_string(),
+                limit: 20
+            }
         );
     }
 
