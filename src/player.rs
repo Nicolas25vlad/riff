@@ -109,11 +109,8 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     println!("Press Ctrl+C to stop.");
 
     tokio::select! {
-        result = spirc_task => {
-            match result {
-                Ok(()) => Err("Spotify Connect stopped unexpectedly. Re-run with RIFF_LOG=debug riff player for details.".to_string()),
-                Err(err) => Err(format!("Spotify Connect stopped: {err}. Re-run with RIFF_LOG=debug riff player for details.")),
-            }
+        _ = spirc_task => {
+            Err("Spotify Connect stopped unexpectedly. Re-run with RIFF_LOG=debug riff player for details.".to_string())
         },
         result = tokio::signal::ctrl_c() => {
             result.map_err(|err| format!("could not listen for Ctrl+C: {err}"))?;
