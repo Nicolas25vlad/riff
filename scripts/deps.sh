@@ -73,12 +73,12 @@ usage() {
 Riff dependency helper
 
 Usage:
-  ./scripts/deps.sh install   Install native dependencies and fetch Rust crates
-  ./scripts/deps.sh update    Update Rust dependencies within Cargo.toml constraints
-  ./scripts/deps.sh check     Validate dependency resolution and compile the project
-  ./scripts/deps.sh native    Install only native/system dependencies
-  ./scripts/deps.sh rust      Fetch only Rust dependencies
-  ./scripts/deps.sh help      Show this help
+  bash scripts/deps.sh install   Install native dependencies and fetch Rust crates
+  bash scripts/deps.sh update    Update Rust dependencies within Cargo.toml constraints
+  bash scripts/deps.sh check     Validate dependency resolution and compile the project
+  bash scripts/deps.sh native    Install only native/system dependencies
+  bash scripts/deps.sh rust      Fetch only Rust dependencies
+  bash scripts/deps.sh help      Show this help
 EOF
 }
 
