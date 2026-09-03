@@ -71,9 +71,9 @@ fn parse_search(args: &[String]) -> Result<Command, RiffError> {
                 index += 1;
             }
             "--limit" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    RiffError::Usage("search --limit requires a value".into())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| RiffError::Usage("search --limit requires a value".into()))?;
                 limit = value.parse::<usize>().map_err(|_| {
                     RiffError::Usage("search --limit must be a positive integer".into())
                 })?;
