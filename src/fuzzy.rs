@@ -39,9 +39,7 @@ pub fn rank_candidates(
             fuzzy_score(&normalized_query, &normalize(&combined), &normalize(title))
         };
 
-        candidate
-            .metadata
-            .insert("match".into(), score.to_string());
+        candidate.metadata.insert("match".into(), score.to_string());
     }
 
     candidates.retain(|candidate| {
