@@ -330,29 +330,27 @@ async fn run_terminal(
 
             if event::poll(Duration::from_millis(50))
                 .map_err(|err| format!("could not poll terminal input: {err}"))?
-            {
-                if let Event::Key(key) =
+                && let Event::Key(key) =
                     event::read().map_err(|err| format!("could not read terminal input: {err}"))?
-                {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
+            {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        let _ = controls.send(Control::Quit);
+                        break;
                     }
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            let _ = controls.send(Control::Quit);
-                            break;
-                        }
-                        KeyCode::Char(' ') => {
-                            let _ = controls.send(Control::Toggle);
-                        }
-                        KeyCode::Char('n') | KeyCode::Right => {
-                            let _ = controls.send(Control::Next);
-                        }
-                        KeyCode::Char('p') | KeyCode::Left => {
-                            let _ = controls.send(Control::Previous);
-                        }
-                        _ => {}
+                    KeyCode::Char(' ') => {
+                        let _ = controls.send(Control::Toggle);
                     }
+                    KeyCode::Char('n') | KeyCode::Right => {
+                        let _ = controls.send(Control::Next);
+                    }
+                    KeyCode::Char('p') | KeyCode::Left => {
+                        let _ = controls.send(Control::Previous);
+                    }
+                    _ => {}
                 }
             }
 
