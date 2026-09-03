@@ -1,6 +1,9 @@
-use std::{collections::BTreeMap, env, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs};
 
-use crate::fuzzy::{DEFAULT_THRESHOLD, rank_candidates};
+use crate::{
+    fuzzy::{DEFAULT_THRESHOLD, rank_candidates},
+    platform,
+};
 use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
@@ -11,7 +14,6 @@ use librespot::{
     metadata::{Metadata, Track as SpotifyTrack},
     oauth::OAuthClientBuilder,
     playback::{
-        audio_backend,
         config::{AudioFormat, PlayerConfig},
         mixer,
         mixer::MixerConfig,
@@ -80,8 +82,7 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         ..ConnectConfig::default()
     };
 
-    let sink_builder = audio_backend::find(None)
-        .ok_or_else(|| "no supported audio backend was found".to_string())?;
+    let sink_builder = platform::audio_sink_builder()?;
     let mixer_builder =
         mixer::find(None).ok_or_else(|| "no supported audio mixer was found".to_string())?;
 
@@ -232,11 +233,11 @@ async fn discovery_session() -> Result<Session, String> {
 }
 
 fn session_parts() -> Result<(SessionConfig, Cache, Credentials), String> {
-    let cache_dir = cache_dir()?;
+    let cache_dir = platform::spotify_cache_dir()?;
     let files_dir = cache_dir.join("files");
     fs::create_dir_all(&files_dir)
         .map_err(|err| format!("could not create Spotify cache directory: {err}"))?;
-    secure_cache_dir(&cache_dir)?;
+    platform::secure_cache_dir(&cache_dir)?;
 
     let session_config = SessionConfig::default();
     let cache = Cache::new(
@@ -391,39 +392,6 @@ fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, Stri
     .get_access_token()
     .map(|token| Credentials::with_access_token(token.access_token))
     .map_err(|err| format!("Spotify authorization failed: {err}"))
-}
-
-fn cache_dir() -> Result<PathBuf, String> {
-    if let Some(path) = env::var_os("XDG_CACHE_HOME") {
-        return Ok(PathBuf::from(path).join("riff").join("spotify"));
-    }
-
-    let home = env::var_os("HOME").ok_or_else(|| {
-        "HOME is not set; set HOME or XDG_CACHE_HOME so Riff can store Spotify credentials"
-            .to_string()
-    })?;
-
-    Ok(PathBuf::from(home)
-        .join(".cache")
-        .join("riff")
-        .join("spotify"))
-}
-
-#[cfg(unix)]
-fn secure_cache_dir(path: &std::path::Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::metadata(path)
-        .map_err(|err| format!("could not inspect Spotify cache permissions: {err}"))?
-        .permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(path, permissions)
-        .map_err(|err| format!("could not secure Spotify cache directory: {err}"))
-}
-
-#[cfg(not(unix))]
-fn secure_cache_dir(_path: &std::path::Path) -> Result<(), String> {
-    Ok(())
 }
 
 #[cfg(test)]
