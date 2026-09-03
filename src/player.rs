@@ -277,7 +277,9 @@ fn oauth_credentials_with_web_token(
         Some(refresh_token) => match client.refresh_token(refresh_token) {
             Ok(token) => token,
             Err(err) => {
-                println!("Cached Spotify OAuth token could not be refreshed ({err}). Re-authorizing...");
+                println!(
+                    "Cached Spotify OAuth token could not be refreshed ({err}). Re-authorizing..."
+                );
                 client
                     .get_access_token()
                     .map_err(|err| format!("Spotify authorization failed: {err}"))?
@@ -357,7 +359,8 @@ fn write_secret_file(path: &std::path::Path, contents: &[u8]) -> Result<(), Stri
 
 #[cfg(not(unix))]
 fn write_secret_file(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
-    fs::write(path, contents).map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))
+    fs::write(path, contents)
+        .map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))
 }
 
 #[cfg(test)]
