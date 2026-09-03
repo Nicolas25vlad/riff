@@ -24,21 +24,23 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 install_linux_audio_deps() {
   [ "$(uname -s)" = "Linux" ] || return 0
 
-  if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists alsa; then
+  if command -v pkg-config >/dev/null 2>&1 \
+    && pkg-config --exists alsa \
+    && pkg-config --exists libpulse; then
     return 0
   fi
 
-  say "Installing Linux audio build dependencies..."
+  say "Installing Linux/WSL audio build dependencies..."
 
   if command -v pacman >/dev/null 2>&1; then
-    sudo pacman -S --needed --noconfirm base-devel alsa-lib pkgconf
+    sudo pacman -S --needed --noconfirm base-devel alsa-lib libpulse pkgconf
   elif command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update
-    sudo apt-get install -y build-essential libasound2-dev pkg-config
+    sudo apt-get install -y build-essential libasound2-dev libpulse-dev pkg-config
   elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y gcc make alsa-lib-devel pkgconf-pkg-config
+    sudo dnf install -y gcc make alsa-lib-devel pulseaudio-libs-devel pkgconf-pkg-config
   else
-    fail "Riff needs an ALSA development package and pkg-config to build its Linux audio backend. Install them with your distro package manager and run this installer again."
+    fail "Riff needs ALSA and PulseAudio development packages plus pkg-config to build on Linux/WSL. Install them with your distro package manager and run this installer again."
   fi
 }
 
@@ -72,4 +74,4 @@ else
   riff --version
 fi
 
-printf '\nTry it:\n  riff doctor\n  riff player\n  riff init\n  riff validate playlist.riff\n'
+printf '\nTry it:\n  riff doctor\n  riff player\n  riff init\n  riff tui playlist.riff\n'
