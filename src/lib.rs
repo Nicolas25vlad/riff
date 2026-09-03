@@ -124,7 +124,9 @@ impl Playlist {
 fn parse_track(value: &str) -> Result<Track, RiffError> {
     let value = value.trim();
     if !value.starts_with('"') {
-        return Err(RiffError::Parse("track must start with a quoted label".into()));
+        return Err(RiffError::Parse(
+            "track must start with a quoted label".into(),
+        ));
     }
 
     let closing_quote = value[1..]
@@ -348,7 +350,11 @@ fn format_candidates(query: &str, candidates: &[player::SearchCandidate]) -> Str
 }
 
 fn format_candidate_details(candidate: &player::SearchCandidate) -> String {
-    let mut lines = vec![format!("{}\nid: {}", candidate.display_name(), candidate.uri)];
+    let mut lines = vec![format!(
+        "{}\nid: {}",
+        candidate.display_name(),
+        candidate.uri
+    )];
     if candidate.metadata.is_empty() {
         lines.push("metadata: not returned by Spotify context resolver".to_string());
     } else {
