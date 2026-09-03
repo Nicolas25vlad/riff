@@ -161,19 +161,25 @@ pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
         .await
         .map_err(|err| format!("could not inspect `{uri}`: {err}"))?;
 
-    let candidate = candidates_from_context(context)
-        .into_iter()
-        .find(|candidate| candidate.uri == uri)
-        .or_else(|| {
-            Some(SearchCandidate {
-                uri: uri.to_string(),
-                metadata: BTreeMap::new(),
-            })
-        })
-        .ok_or_else(|| format!("Spotify did not return metadata for `{uri}`"))?;
+    let mut candidate = None;
+    for track in context.pages.into_iter().flat_map(|page| page.tracks) {
+        let Some(track_uri) = track.uri else {
+            continue;
+        };
+        if track_uri == uri {
+            candidate = Some(SearchCandidate {
+                uri: track_uri,
+                metadata: track.metadata.into_iter().collect(),
+            });
+            break;
+        }
+    }
 
     session.shutdown();
-    Ok(candidate)
+    Ok(candidate.unwrap_or_else(|| SearchCandidate {
+        uri: uri.to_string(),
+        metadata: BTreeMap::new(),
+    }))
 }
 
 async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Vec<String>, String> {
@@ -252,26 +258,23 @@ async fn search_with_session(
         .await
         .map_err(|err| format!("Spotify internal search failed for `{query}`: {err}"))?;
 
-    Ok(candidates_from_context(context)
-        .into_iter()
-        .take(limit)
-        .collect())
-}
-
-fn candidates_from_context(context: librespot::core::protocol::context::Context) -> Vec<SearchCandidate> {
-    context
-        .pages
-        .into_iter()
-        .flat_map(|page| page.tracks)
-        .filter_map(|track| {
-            let uri = track.uri?;
-            if !is_spotify_track_uri(&uri) {
-                return None;
-            }
-            let metadata = track.metadata.into_iter().collect::<BTreeMap<_, _>>();
-            Some(SearchCandidate { uri, metadata })
-        })
-        .collect()
+    let mut candidates = Vec::new();
+    for track in context.pages.into_iter().flat_map(|page| page.tracks) {
+        let Some(uri) = track.uri else {
+            continue;
+        };
+        if !is_spotify_track_uri(&uri) {
+            continue;
+        }
+        candidates.push(SearchCandidate {
+            uri,
+            metadata: track.metadata.into_iter().collect(),
+        });
+        if candidates.len() == limit {
+            break;
+        }
+    }
+    Ok(candidates)
 }
 
 fn is_spotify_track_uri(uri: &str) -> bool {
