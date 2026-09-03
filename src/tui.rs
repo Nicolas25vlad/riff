@@ -3,14 +3,13 @@ use std::{env, fs, io, path::PathBuf, time::Duration};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
     core::{
-        SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig,
-        session::Session,
+        authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
     },
     oauth::OAuthClientBuilder,
     playback::{
@@ -22,14 +21,14 @@ use librespot::{
     },
 };
 use ratatui::{
-    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    Frame, Terminal,
 };
-use riff::{Playlist, player};
+use riff::{player, Playlist};
 use tokio::sync::mpsc;
 
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
@@ -272,11 +271,11 @@ async fn run_player(
                             position_ms,
                         });
                     }
-                    PlayerEvent::Stopped { track_id, position_ms, .. } => {
+                    PlayerEvent::Stopped { track_id, .. } => {
                         let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Stopped));
                         let _ = updates.send(PlayerUpdate::Track {
                             uri: track_id.to_string(),
-                            position_ms,
+                            position_ms: 0,
                         });
                     }
                     _ => {}
@@ -368,7 +367,9 @@ fn apply_update(state: &mut AppState, update: PlayerUpdate) -> Result<(), String
             state.message = match status {
                 PlaybackStatus::Starting => "Starting playback...".to_string(),
                 PlaybackStatus::Playing => "Space pause  n next  p previous  q quit".to_string(),
-                PlaybackStatus::Paused => "Paused. Space resume  n next  p previous  q quit".to_string(),
+                PlaybackStatus::Paused => {
+                    "Paused. Space resume  n next  p previous  q quit".to_string()
+                }
                 PlaybackStatus::Stopped => "Playback stopped".to_string(),
             };
         }
