@@ -267,6 +267,9 @@ mod tests {
 
     #[test]
     fn percent_encodes_non_ascii_search_text() {
-        assert_eq!(spotify_search_uri("Motörhead"), "spotify:search:Mot%C3%B6rhead");
+        assert_eq!(
+            spotify_search_uri("Motörhead"),
+            "spotify:search:Mot%C3%B6rhead"
+        );
     }
 }
