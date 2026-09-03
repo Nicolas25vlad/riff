@@ -3,7 +3,11 @@ use std::{collections::BTreeMap, env, fs, path::PathBuf};
 use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
-    core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session},
+    core::{
+        SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig,
+        session::Session,
+    },
+    metadata::{Metadata, Track as SpotifyTrack},
     oauth::OAuthClientBuilder,
     playback::{
         audio_backend,
@@ -35,12 +39,13 @@ pub struct SearchCandidate {
 
 impl SearchCandidate {
     pub fn display_name(&self) -> String {
-        for key in ["title", "name", "track_name"] {
-            if let Some(value) = self.metadata.get(key) {
-                return value.clone();
-            }
+        let title = self.metadata.get("title");
+        let artist = self.metadata.get("artist");
+        match (artist, title) {
+            (Some(artist), Some(title)) => format!("{artist} - {title}"),
+            (_, Some(title)) => title.clone(),
+            _ => self.uri.clone(),
         }
-        self.uri.clone()
     }
 }
 
@@ -155,31 +160,9 @@ pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
 
     init_logging();
     let session = discovery_session().await?;
-    let context = session
-        .spclient()
-        .get_context(uri)
-        .await
-        .map_err(|err| format!("could not inspect `{uri}`: {err}"))?;
-
-    let mut candidate = None;
-    for track in context.pages.into_iter().flat_map(|page| page.tracks) {
-        let Some(track_uri) = track.uri else {
-            continue;
-        };
-        if track_uri == uri {
-            candidate = Some(SearchCandidate {
-                uri: track_uri,
-                metadata: track.metadata.into_iter().collect(),
-            });
-            break;
-        }
-    }
-
+    let result = enrich_candidate(&session, uri.to_string(), BTreeMap::new()).await;
     session.shutdown();
-    Ok(candidate.unwrap_or_else(|| SearchCandidate {
-        uri: uri.to_string(),
-        metadata: BTreeMap::new(),
-    }))
+    result
 }
 
 async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Vec<String>, String> {
@@ -210,7 +193,7 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             .into_iter()
             .next()
             .ok_or_else(|| format!("no Spotify track found for `{}`", track.label))?;
-        println!("       -> {}", candidate.uri);
+        println!("       -> {} ({})", candidate.display_name(), candidate.uri);
         resolved.push(candidate.uri);
     }
 
@@ -271,10 +254,14 @@ async fn search_with_session(
         if !is_spotify_track_uri(&uri) {
             continue;
         }
-        candidates.push(SearchCandidate {
+
+        let candidate = enrich_candidate(
+            session,
             uri,
-            metadata: track.metadata.into_iter().collect(),
-        });
+            track.metadata.into_iter().collect::<BTreeMap<_, _>>(),
+        )
+        .await?;
+        candidates.push(candidate);
         if candidates.len() == limit {
             break;
         }
@@ -282,8 +269,50 @@ async fn search_with_session(
     Ok(candidates)
 }
 
+async fn enrich_candidate(
+    session: &Session,
+    uri: String,
+    mut metadata: BTreeMap<String, String>,
+) -> Result<SearchCandidate, String> {
+    let spotify_uri = SpotifyUri::from_uri(&uri)
+        .map_err(|err| format!("Spotify returned an invalid track URI `{uri}`: {err}"))?;
+    let track = SpotifyTrack::get(session, &spotify_uri)
+        .await
+        .map_err(|err| format!("could not load metadata for `{uri}`: {err}"))?;
+
+    metadata.insert("title".into(), track.name.clone());
+    metadata.insert(
+        "artist".into(),
+        track
+            .artists
+            .iter()
+            .map(|artist| artist.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    metadata.insert("album".into(), track.album.name.clone());
+    metadata.insert("duration".into(), format_duration(track.duration));
+    metadata.insert("popularity".into(), track.popularity.to_string());
+
+    if !track.version_title.trim().is_empty() {
+        metadata.insert("version".into(), track.version_title.clone());
+    }
+    if !track.original_title.trim().is_empty() && track.original_title != track.name {
+        metadata.insert("original_title".into(), track.original_title.clone());
+    }
+
+    Ok(SearchCandidate { uri, metadata })
+}
+
+fn format_duration(duration_ms: i32) -> String {
+    let total_seconds = duration_ms.max(0) as u64 / 1000;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes}:{seconds:02}")
+}
+
 fn is_spotify_track_uri(uri: &str) -> bool {
-    uri.starts_with("spotify:track:") && uri.len() > "spotify:track:".len()
+    matches!(SpotifyUri::from_uri(uri), Ok(SpotifyUri::Track { .. }))
 }
 
 fn spotify_search_uri(query: &str) -> String {
@@ -389,8 +418,15 @@ mod tests {
 
     #[test]
     fn validates_spotify_track_ids() {
-        assert!(is_spotify_track_uri("spotify:track:abc123"));
-        assert!(!is_spotify_track_uri("spotify:album:abc123"));
+        assert!(is_spotify_track_uri("spotify:track:6tRHtqNabJIQVXbyY9AnMU"));
+        assert!(!is_spotify_track_uri(
+            "spotify:album:6tRHtqNabJIQVXbyY9AnMU"
+        ));
         assert!(!is_spotify_track_uri("spotify:track:"));
+    }
+
+    #[test]
+    fn formats_track_duration() {
+        assert_eq!(format_duration(475_000), "7:55");
     }
 }
