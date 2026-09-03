@@ -1,6 +1,6 @@
 [package]
 name = "riff"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A terminal-first music player where playlists are code."
 license = "MIT"
@@ -11,6 +11,8 @@ keywords = ["music", "spotify", "terminal", "tui", "rust"]
 categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
+librespot = { version = "0.8.0", default-features = false, features = ["rodio-backend", "rustls-tls-native-roots"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 
 [profile.release]
 strip = true
