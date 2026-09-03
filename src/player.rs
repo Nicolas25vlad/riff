@@ -199,8 +199,8 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             tracks.len(),
             track.label
         );
-        let candidates = smart_search_with_session(session, &track.label, 1, false, DEFAULT_THRESHOLD)
-            .await?;
+        let candidates =
+            smart_search_with_session(session, &track.label, 1, false, DEFAULT_THRESHOLD).await?;
         let candidate = candidates
             .into_iter()
             .next()
