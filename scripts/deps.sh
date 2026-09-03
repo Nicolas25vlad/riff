@@ -20,25 +20,30 @@ fail() {
 install_native_deps() {
   case "$(uname -s)" in
     Linux)
-      if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists alsa; then
-        say "Native Linux audio dependencies are already installed."
+      if command -v pkg-config >/dev/null 2>&1 \
+        && pkg-config --exists alsa \
+        && pkg-config --exists libpulse; then
+        say "Native Linux/WSL audio dependencies are already installed."
         return 0
       fi
 
-      say "Installing native Linux audio dependencies..."
+      say "Installing native Linux/WSL audio dependencies..."
       if command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed --noconfirm base-devel alsa-lib pkgconf
+        sudo pacman -S --needed --noconfirm base-devel alsa-lib libpulse pkgconf
       elif command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update
-        sudo apt-get install -y build-essential libasound2-dev pkg-config
+        sudo apt-get install -y build-essential libasound2-dev libpulse-dev pkg-config
       elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y gcc make alsa-lib-devel pkgconf-pkg-config
+        sudo dnf install -y gcc make alsa-lib-devel pulseaudio-libs-devel pkgconf-pkg-config
       else
-        fail "Unsupported Linux package manager. Install an ALSA development package, pkg-config and a C toolchain manually."
+        fail "Unsupported Linux package manager. Install ALSA and PulseAudio development packages, pkg-config and a C toolchain manually."
       fi
       ;;
     Darwin)
       say "macOS detected. No extra native package is required by this helper right now."
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      say "Windows shell detected. Native audio dependencies are provided by the Windows/Rodio build."
       ;;
     *)
       warn "Automatic native dependency installation is not supported on this OS yet."
