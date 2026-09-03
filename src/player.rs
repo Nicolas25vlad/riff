@@ -4,7 +4,7 @@ use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
     core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session},
-    oauth::OAuthClientBuilder,
+    oauth::{OAuthClient, OAuthClientBuilder},
     playback::{
         audio_backend,
         config::{AudioFormat, PlayerConfig},
@@ -21,7 +21,7 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
-const SEARCH_TOKEN_SCOPES: &str = "streaming";
+const OAUTH_REFRESH_TOKEN_FILE: &str = "oauth-refresh-token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerOptions {
@@ -71,9 +71,16 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     )
     .map_err(|err| format!("could not initialize Spotify cache: {err}"))?;
 
-    let credentials = match cache.credentials() {
-        Some(credentials) => credentials,
-        None => oauth_credentials(&session_config)?,
+    let (credentials, web_api_token) = if options.track_queries.is_empty() {
+        let credentials = match cache.credentials() {
+            Some(credentials) => credentials,
+            None => oauth_credentials(&session_config)?,
+        };
+        (credentials, None)
+    } else {
+        let (credentials, access_token) =
+            oauth_credentials_with_web_token(&session_config, &cache_dir)?;
+        (credentials, Some(access_token))
     };
 
     let session = Session::new(session_config, Some(cache));
@@ -96,7 +103,10 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         .map_err(|err| format!("could not activate Spotify Connect device: {err}"))?;
 
     if !options.track_queries.is_empty() {
-        let resolved = resolve_track_queries(&session, &options.track_queries).await?;
+        let access_token = web_api_token
+            .as_deref()
+            .ok_or_else(|| "Spotify Web API token was not initialized".to_string())?;
+        let resolved = resolve_track_queries(access_token, &options.track_queries).await?;
         println!("Resolved {} track(s). Starting playlist...", resolved.len());
         spirc
             .load(LoadRequest::from_tracks(
@@ -166,15 +176,9 @@ struct SearchArtist {
 }
 
 async fn resolve_track_queries(
-    session: &Session,
+    access_token: &str,
     queries: &[String],
 ) -> Result<Vec<ResolvedTrack>, String> {
-    let token = session
-        .token_provider()
-        .get_token(SEARCH_TOKEN_SCOPES)
-        .await
-        .map_err(|err| format!("could not obtain Spotify search token: {err}"))?;
-
     let client = reqwest::Client::new();
     let mut resolved = Vec::with_capacity(queries.len());
 
@@ -183,7 +187,7 @@ async fn resolve_track_queries(
 
         let response = client
             .get("https://api.spotify.com/v1/search")
-            .bearer_auth(&token.access_token)
+            .bearer_auth(access_token)
             .query(&[("q", query.as_str()), ("type", "track"), ("limit", "5")])
             .send()
             .await
@@ -237,9 +241,7 @@ fn init_logging() {
     let _ = env_logger::Builder::from_env(env).try_init();
 }
 
-fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
-    println!("No cached Spotify login found. Opening Spotify authorization in your browser...");
-
+fn oauth_client(session_config: &SessionConfig) -> Result<OAuthClient, String> {
     OAuthClientBuilder::new(
         &session_config.client_id,
         OAUTH_REDIRECT_URI,
@@ -248,10 +250,56 @@ fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, Stri
     .open_in_browser()
     .with_custom_message("Riff is connected. You can close this tab and return to the terminal.")
     .build()
-    .map_err(|err| format!("could not initialize Spotify OAuth: {err}"))?
-    .get_access_token()
-    .map(|token| Credentials::with_access_token(token.access_token))
-    .map_err(|err| format!("Spotify authorization failed: {err}"))
+    .map_err(|err| format!("could not initialize Spotify OAuth: {err}"))
+}
+
+fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
+    println!("No cached Spotify login found. Opening Spotify authorization in your browser...");
+
+    oauth_client(session_config)?
+        .get_access_token()
+        .map(|token| Credentials::with_access_token(token.access_token))
+        .map_err(|err| format!("Spotify authorization failed: {err}"))
+}
+
+fn oauth_credentials_with_web_token(
+    session_config: &SessionConfig,
+    cache_dir: &std::path::Path,
+) -> Result<(Credentials, String), String> {
+    let client = oauth_client(session_config)?;
+    let refresh_path = cache_dir.join(OAUTH_REFRESH_TOKEN_FILE);
+    let cached_refresh = fs::read_to_string(&refresh_path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let token = match cached_refresh.as_deref() {
+        Some(refresh_token) => match client.refresh_token(refresh_token) {
+            Ok(token) => token,
+            Err(err) => {
+                println!(
+                    "Cached Spotify OAuth token could not be refreshed ({err}). Re-authorizing..."
+                );
+                client
+                    .get_access_token()
+                    .map_err(|err| format!("Spotify authorization failed: {err}"))?
+            }
+        },
+        None => {
+            println!("Spotify Web API authorization is required for .riff track resolution.");
+            client
+                .get_access_token()
+                .map_err(|err| format!("Spotify authorization failed: {err}"))?
+        }
+    };
+
+    if !token.refresh_token.is_empty() {
+        write_secret_file(&refresh_path, token.refresh_token.as_bytes())?;
+    }
+
+    let access_token = token.access_token;
+    let credentials = Credentials::with_access_token(access_token.clone());
+    Ok((credentials, access_token))
 }
 
 fn cache_dir() -> Result<PathBuf, String> {
@@ -285,6 +333,34 @@ fn secure_cache_dir(path: &std::path::Path) -> Result<(), String> {
 #[cfg(not(unix))]
 fn secure_cache_dir(_path: &std::path::Path) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(unix)]
+fn write_secret_file(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true).mode(0o600);
+    use std::io::Write;
+    let mut file = options
+        .open(path)
+        .map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))?;
+    file.write_all(contents)
+        .map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))?;
+
+    let mut permissions = file
+        .metadata()
+        .map_err(|err| format!("could not inspect OAuth token permissions: {err}"))?
+        .permissions();
+    permissions.set_mode(0o600);
+    file.set_permissions(permissions)
+        .map_err(|err| format!("could not secure OAuth token file: {err}"))
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
+    fs::write(path, contents)
+        .map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))
 }
 
 #[cfg(test)]
