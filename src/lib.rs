@@ -1,5 +1,6 @@
 use std::{fmt, fs, io, io::Write, path::PathBuf};
 
+pub mod fuzzy;
 pub mod player;
 
 const DEFAULT_PLAYLIST: &str = r#"playlist "my-playlist" {
@@ -18,7 +19,12 @@ pub enum Command {
     Inspect(PathBuf),
     Play(PathBuf),
     Player(Option<String>),
-    Search { query: String, limit: usize },
+    Search {
+        query: String,
+        limit: usize,
+        exact: bool,
+        threshold: u8,
+    },
     InspectTrack(String),
     Pick(String),
 }
@@ -37,24 +43,7 @@ impl Command {
             [cmd, path] if cmd == "play" => Ok(Self::Play(path.into())),
             [cmd] if cmd == "player" => Ok(Self::Player(None)),
             [cmd, uri] if cmd == "player" => Ok(Self::Player(Some(uri.clone()))),
-            [cmd, query] if cmd == "search" => Ok(Self::Search {
-                query: query.clone(),
-                limit: 10,
-            }),
-            [cmd, query, flag, limit] if cmd == "search" && flag == "--limit" => {
-                let limit = limit.parse::<usize>().map_err(|_| {
-                    RiffError::Usage("search --limit must be a positive integer".into())
-                })?;
-                if limit == 0 {
-                    return Err(RiffError::Usage(
-                        "search --limit must be greater than zero".into(),
-                    ));
-                }
-                Ok(Self::Search {
-                    query: query.clone(),
-                    limit,
-                })
-            }
+            [cmd, rest @ ..] if cmd == "search" => parse_search(rest),
             [cmd, uri] if cmd == "inspect-track" => Ok(Self::InspectTrack(uri.clone())),
             [cmd, query] if cmd == "pick" => Ok(Self::Pick(query.clone())),
             _ => Err(RiffError::Usage(
@@ -62,6 +51,62 @@ impl Command {
             )),
         }
     }
+}
+
+fn parse_search(args: &[String]) -> Result<Command, RiffError> {
+    let Some(query) = args.first() else {
+        return Err(RiffError::Usage("search requires a query".into()));
+    };
+
+    let mut limit = 10usize;
+    let mut exact = false;
+    let mut threshold = fuzzy::DEFAULT_THRESHOLD;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--exact" => {
+                exact = true;
+                threshold = 100;
+                index += 1;
+            }
+            "--limit" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| RiffError::Usage("search --limit requires a value".into()))?;
+                limit = value.parse::<usize>().map_err(|_| {
+                    RiffError::Usage("search --limit must be a positive integer".into())
+                })?;
+                if limit == 0 {
+                    return Err(RiffError::Usage(
+                        "search --limit must be greater than zero".into(),
+                    ));
+                }
+                index += 2;
+            }
+            "--threshold" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    RiffError::Usage("search --threshold requires a value from 0 to 100".into())
+                })?;
+                threshold = value.parse::<u8>().map_err(|_| {
+                    RiffError::Usage("search --threshold must be from 0 to 100".into())
+                })?;
+                index += 2;
+            }
+            unknown => {
+                return Err(RiffError::Usage(format!(
+                    "unknown search option `{unknown}`"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::Search {
+        query: query.clone(),
+        limit,
+        exact,
+        threshold,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,12 +334,19 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
             player::run(options).await.map_err(RiffError::Player)?;
             Ok(String::new())
         }
-        Command::Search { query, limit } => {
-            let candidates = player::search(&query, limit)
+        Command::Search {
+            query,
+            limit,
+            exact,
+            threshold,
+        } => {
+            let candidates = player::search_advanced(&query, limit, exact, threshold)
                 .await
                 .map_err(RiffError::Player)?;
             if candidates.is_empty() {
-                return Ok(format!("No Spotify tracks found for `{query}`."));
+                return Ok(format!(
+                    "No Spotify tracks matched `{query}` at the requested confidence."
+                ));
             }
             Ok(format_candidates(&query, &candidates))
         }
@@ -326,7 +378,7 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
             let candidate = &candidates[selection - 1];
             Ok(format!(
                 "track \"{}\" id=\"{}\"",
-                escape_riff_string(&query),
+                escape_riff_string(&candidate.display_name()),
                 candidate.uri
             ))
         }
@@ -336,33 +388,42 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
 fn format_candidates(query: &str, candidates: &[player::SearchCandidate]) -> String {
     let mut lines = vec![format!("Spotify recordings for `{query}`:")];
     for (index, candidate) in candidates.iter().enumerate() {
+        let confidence = candidate
+            .metadata
+            .get("match")
+            .map(String::as_str)
+            .unwrap_or("?");
         lines.push(format!(
-            "\n{}. {}\n   id: {}",
+            "\n{}. {}  [{confidence}% match]",
             index + 1,
-            candidate.display_name(),
-            candidate.uri
+            candidate.display_name()
         ));
-        for (key, value) in candidate.metadata.iter().take(6) {
-            lines.push(format!("   {key}: {value}"));
+
+        for key in ["album", "version", "duration", "popularity"] {
+            if let Some(value) = candidate.metadata.get(key) {
+                lines.push(format!("   {key}: {value}"));
+            }
         }
+        lines.push(format!("   id: {}", candidate.uri));
     }
     lines.join("\n")
 }
 
 fn format_candidate_details(candidate: &player::SearchCandidate) -> String {
-    let mut lines = vec![format!(
-        "{}\nid: {}",
-        candidate.display_name(),
-        candidate.uri
-    )];
-    if candidate.metadata.is_empty() {
-        lines.push("metadata: not returned by Spotify context resolver".to_string());
-    } else {
-        lines.push("metadata:".to_string());
-        for (key, value) in &candidate.metadata {
-            lines.push(format!("  {key}: {value}"));
+    let mut lines = vec![candidate.display_name()];
+    for key in [
+        "album",
+        "version",
+        "duration",
+        "popularity",
+        "original_title",
+        "match",
+    ] {
+        if let Some(value) = candidate.metadata.get(key) {
+            lines.push(format!("{key}: {value}"));
         }
     }
+    lines.push(format!("id: {}", candidate.uri));
     lines.join("\n")
 }
 
@@ -387,14 +448,14 @@ fn init(path: PathBuf) -> Result<String, RiffError> {
 
 pub fn help() -> String {
     format!(
-        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]         Create a starter playlist (default: playlist.riff)\n  doctor              Check the local Riff environment\n  validate <file>     Validate a .riff playlist\n  inspect <file>      Parse and print a .riff playlist\n  play <file>         Resolve a .riff playlist on Spotify and start playback\n  search <query>      Explore Spotify recordings and stable track IDs\n  inspect-track <id>  Inspect one Spotify track ID\n  pick <query>        Interactively choose a recording and print pinned DSL\n  player [uri]        Start Riff as a local Spotify Connect player\n  help                Print this help\n  version             Print version",
+        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]         Create a starter playlist (default: playlist.riff)\n  doctor              Check the local Riff environment\n  validate <file>     Validate a .riff playlist\n  inspect <file>      Parse and print a .riff playlist\n  play <file>         Resolve a .riff playlist on Spotify and start playback\n  search <query>      Smart fuzzy search (optional: --limit N --threshold 0-100 --exact)\n  inspect-track <id>  Inspect one Spotify track ID\n  pick <query>        Interactively choose a recording and print pinned DSL\n  player [uri]        Start Riff as a local Spotify Connect player\n  help                Print this help\n  version             Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
 
 fn doctor() -> String {
     format!(
-        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      player + discovery + pinned track ids available (Premium required)\n  playback     librespot / local audio backend",
+        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      player + fuzzy discovery + pinned track ids available (Premium required)\n  playback     librespot / local audio backend",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
@@ -488,10 +549,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_search_limit() {
+    fn search_is_fuzzy_by_default() {
+        let args = vec!["search".to_string(), "black sabath war pig".to_string()];
+        assert_eq!(
+            Command::parse(&args).expect("command should parse"),
+            Command::Search {
+                query: "black sabath war pig".to_string(),
+                limit: 10,
+                exact: false,
+                threshold: fuzzy::DEFAULT_THRESHOLD,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_search_controls_in_any_order() {
         let args = vec![
             "search".to_string(),
             "War Pigs".to_string(),
+            "--threshold".to_string(),
+            "80".to_string(),
             "--limit".to_string(),
             "20".to_string(),
         ];
@@ -499,7 +576,27 @@ mod tests {
             Command::parse(&args).expect("command should parse"),
             Command::Search {
                 query: "War Pigs".to_string(),
-                limit: 20
+                limit: 20,
+                exact: false,
+                threshold: 80,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_exact_search() {
+        let args = vec![
+            "search".to_string(),
+            "Black Sabbath War Pigs".to_string(),
+            "--exact".to_string(),
+        ];
+        assert_eq!(
+            Command::parse(&args).expect("command should parse"),
+            Command::Search {
+                query: "Black Sabbath War Pigs".to_string(),
+                limit: 10,
+                exact: true,
+                threshold: 100,
             }
         );
     }

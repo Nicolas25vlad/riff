@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
+use crate::fuzzy::{DEFAULT_THRESHOLD, rank_candidates};
 use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
@@ -24,6 +25,7 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
+const FUZZY_CANDIDATE_POOL: usize = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackRequest {
@@ -146,9 +148,18 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
 }
 
 pub async fn search(query: &str, limit: usize) -> Result<Vec<SearchCandidate>, String> {
+    search_advanced(query, limit, false, DEFAULT_THRESHOLD).await
+}
+
+pub async fn search_advanced(
+    query: &str,
+    limit: usize,
+    exact: bool,
+    threshold: u8,
+) -> Result<Vec<SearchCandidate>, String> {
     init_logging();
     let session = discovery_session().await?;
-    let result = search_with_session(&session, query, limit).await;
+    let result = smart_search_with_session(&session, query, limit, exact, threshold).await;
     session.shutdown();
     result
 }
@@ -188,12 +199,22 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             tracks.len(),
             track.label
         );
-        let candidates = search_with_session(session, &track.label, 1).await?;
+        let candidates =
+            smart_search_with_session(session, &track.label, 1, false, DEFAULT_THRESHOLD).await?;
         let candidate = candidates
             .into_iter()
             .next()
-            .ok_or_else(|| format!("no Spotify track found for `{}`", track.label))?;
-        println!("       -> {} ({})", candidate.display_name(), candidate.uri);
+            .ok_or_else(|| format!("no confident Spotify track found for `{}`", track.label))?;
+        let confidence = candidate
+            .metadata
+            .get("match")
+            .map(String::as_str)
+            .unwrap_or("?");
+        println!(
+            "       -> {} ({}, {confidence}% match)",
+            candidate.display_name(),
+            candidate.uri
+        );
         resolved.push(candidate.uri);
     }
 
@@ -232,6 +253,20 @@ fn session_parts() -> Result<(SessionConfig, Cache, Credentials), String> {
     };
 
     Ok((session_config, cache, credentials))
+}
+
+async fn smart_search_with_session(
+    session: &Session,
+    query: &str,
+    limit: usize,
+    exact: bool,
+    threshold: u8,
+) -> Result<Vec<SearchCandidate>, String> {
+    let pool_size = FUZZY_CANDIDATE_POOL.max(limit.saturating_mul(3));
+    let raw = search_with_session(session, query, pool_size).await?;
+    let mut ranked = rank_candidates(query, raw, exact, threshold);
+    ranked.truncate(limit);
+    Ok(ranked)
 }
 
 async fn search_with_session(
