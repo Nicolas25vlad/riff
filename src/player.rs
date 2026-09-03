@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf};
+use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 use env_logger::Env;
 use librespot::{
@@ -22,9 +22,32 @@ const OAUTH_SCOPES: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackRequest {
+    pub label: String,
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchCandidate {
+    pub uri: String,
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl SearchCandidate {
+    pub fn display_name(&self) -> String {
+        for key in ["title", "name", "track_name"] {
+            if let Some(value) = self.metadata.get(key) {
+                return value.clone();
+            }
+        }
+        self.uri.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerOptions {
     pub context_uri: Option<String>,
-    pub track_queries: Vec<String>,
+    pub tracks: Vec<TrackRequest>,
     pub device_name: String,
 }
 
@@ -32,7 +55,7 @@ impl Default for PlayerOptions {
     fn default() -> Self {
         Self {
             context_uri: None,
-            track_queries: Vec::new(),
+            tracks: Vec::new(),
             device_name: "Riff".to_string(),
         }
     }
@@ -41,13 +64,7 @@ impl Default for PlayerOptions {
 pub async fn run(options: PlayerOptions) -> Result<(), String> {
     init_logging();
 
-    let cache_dir = cache_dir()?;
-    let files_dir = cache_dir.join("files");
-    fs::create_dir_all(&files_dir)
-        .map_err(|err| format!("could not create Spotify cache directory: {err}"))?;
-    secure_cache_dir(&cache_dir)?;
-
-    let session_config = SessionConfig::default();
+    let (session_config, cache, credentials) = session_parts()?;
     let player_config = PlayerConfig::default();
     let audio_format = AudioFormat::default();
     let mixer_config = MixerConfig::default();
@@ -60,19 +77,6 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         .ok_or_else(|| "no supported audio backend was found".to_string())?;
     let mixer_builder =
         mixer::find(None).ok_or_else(|| "no supported audio mixer was found".to_string())?;
-
-    let cache = Cache::new(
-        Some(cache_dir.clone()),
-        Some(cache_dir.clone()),
-        Some(files_dir),
-        None,
-    )
-    .map_err(|err| format!("could not initialize Spotify cache: {err}"))?;
-
-    let credentials = match cache.credentials() {
-        Some(credentials) => credentials,
-        None => oauth_credentials(&session_config)?,
-    };
 
     let session = Session::new(session_config, Some(cache));
     let mixer =
@@ -93,12 +97,12 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         .activate()
         .map_err(|err| format!("could not activate Spotify Connect device: {err}"))?;
 
-    if !options.track_queries.is_empty() {
-        let resolved = resolve_track_queries(&session, &options.track_queries).await?;
+    if !options.tracks.is_empty() {
+        let resolved = resolve_tracks(&session, &options.tracks).await?;
         println!("Resolved {} track(s). Starting playlist...", resolved.len());
         spirc
             .load(LoadRequest::from_tracks(
-                resolved.into_iter().map(|track| track.uri).collect(),
+                resolved,
                 LoadRequestOptions::default(),
             ))
             .map_err(|err| format!("could not load resolved playlist: {err}"))?;
@@ -118,7 +122,7 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     }
 
     println!("Riff player is online as `{}`.", options.device_name);
-    if options.track_queries.is_empty() && options.context_uri.is_none() {
+    if options.tracks.is_empty() && options.context_uri.is_none() {
         println!("Select it from Spotify Connect and press play in Spotify.");
     }
     println!("Playback diagnostics are enabled. For full logs: RIFF_LOG=debug riff player");
@@ -136,40 +140,142 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ResolvedTrack {
-    uri: String,
+pub async fn search(query: &str, limit: usize) -> Result<Vec<SearchCandidate>, String> {
+    init_logging();
+    let session = discovery_session().await?;
+    let result = search_with_session(&session, query, limit).await;
+    session.shutdown();
+    result
 }
 
-async fn resolve_track_queries(
-    session: &Session,
-    queries: &[String],
-) -> Result<Vec<ResolvedTrack>, String> {
-    let mut resolved = Vec::with_capacity(queries.len());
+pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
+    if !is_spotify_track_uri(uri) {
+        return Err("track id must look like `spotify:track:<id>`".to_string());
+    }
 
-    for (index, query) in queries.iter().enumerate() {
-        println!("  [{}/{}] resolving {query}", index + 1, queries.len());
+    init_logging();
+    let session = discovery_session().await?;
+    let context = session
+        .spclient()
+        .get_context(uri)
+        .await
+        .map_err(|err| format!("could not inspect `{uri}`: {err}"))?;
 
-        let search_uri = spotify_search_uri(query);
-        let context = session
-            .spclient()
-            .get_context(&search_uri)
-            .await
-            .map_err(|err| format!("Spotify internal search failed for `{query}`: {err}"))?;
+    let candidate = candidates_from_context(context)
+        .into_iter()
+        .find(|candidate| candidate.uri == uri)
+        .or_else(|| {
+            Some(SearchCandidate {
+                uri: uri.to_string(),
+                metadata: BTreeMap::new(),
+            })
+        })
+        .ok_or_else(|| format!("Spotify did not return metadata for `{uri}`"))?;
 
-        let uri = context
-            .pages
+    session.shutdown();
+    Ok(candidate)
+}
+
+async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Vec<String>, String> {
+    let mut resolved = Vec::with_capacity(tracks.len());
+
+    for (index, track) in tracks.iter().enumerate() {
+        if let Some(uri) = track.id.as_deref() {
+            if !is_spotify_track_uri(uri) {
+                return Err(format!(
+                    "invalid pinned id for `{}`: expected `spotify:track:<id>`, got `{uri}`",
+                    track.label
+                ));
+            }
+            println!("  [{}/{}] pinned {}", index + 1, tracks.len(), track.label);
+            println!("       -> {uri}");
+            resolved.push(uri.to_string());
+            continue;
+        }
+
+        println!("  [{}/{}] resolving {}", index + 1, tracks.len(), track.label);
+        let candidates = search_with_session(session, &track.label, 1).await?;
+        let candidate = candidates
             .into_iter()
-            .flat_map(|page| page.tracks)
-            .filter_map(|track| track.uri)
-            .find(|uri| uri.starts_with("spotify:track:"))
-            .ok_or_else(|| format!("no Spotify track found for `{query}`"))?;
-
-        println!("       -> {uri}");
-        resolved.push(ResolvedTrack { uri });
+            .next()
+            .ok_or_else(|| format!("no Spotify track found for `{}`", track.label))?;
+        println!("       -> {}", candidate.uri);
+        resolved.push(candidate.uri);
     }
 
     Ok(resolved)
+}
+
+async fn discovery_session() -> Result<Session, String> {
+    let (session_config, cache, credentials) = session_parts()?;
+    let session = Session::new(session_config, Some(cache));
+    session
+        .connect(credentials, false)
+        .await
+        .map_err(|err| format!("could not connect to Spotify: {err}"))?;
+    Ok(session)
+}
+
+fn session_parts() -> Result<(SessionConfig, Cache, Credentials), String> {
+    let cache_dir = cache_dir()?;
+    let files_dir = cache_dir.join("files");
+    fs::create_dir_all(&files_dir)
+        .map_err(|err| format!("could not create Spotify cache directory: {err}"))?;
+    secure_cache_dir(&cache_dir)?;
+
+    let session_config = SessionConfig::default();
+    let cache = Cache::new(
+        Some(cache_dir.clone()),
+        Some(cache_dir),
+        Some(files_dir),
+        None,
+    )
+    .map_err(|err| format!("could not initialize Spotify cache: {err}"))?;
+
+    let credentials = match cache.credentials() {
+        Some(credentials) => credentials,
+        None => oauth_credentials(&session_config)?,
+    };
+
+    Ok((session_config, cache, credentials))
+}
+
+async fn search_with_session(
+    session: &Session,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchCandidate>, String> {
+    let search_uri = spotify_search_uri(query);
+    let context = session
+        .spclient()
+        .get_context(&search_uri)
+        .await
+        .map_err(|err| format!("Spotify internal search failed for `{query}`: {err}"))?;
+
+    Ok(candidates_from_context(context)
+        .into_iter()
+        .take(limit)
+        .collect())
+}
+
+fn candidates_from_context(context: librespot::core::protocol::context::Context) -> Vec<SearchCandidate> {
+    context
+        .pages
+        .into_iter()
+        .flat_map(|page| page.tracks)
+        .filter_map(|track| {
+            let uri = track.uri?;
+            if !is_spotify_track_uri(&uri) {
+                return None;
+            }
+            let metadata = track.metadata.into_iter().collect::<BTreeMap<_, _>>();
+            Some(SearchCandidate { uri, metadata })
+        })
+        .collect()
+}
+
+fn is_spotify_track_uri(uri: &str) -> bool {
+    uri.starts_with("spotify:track:") && uri.len() > "spotify:track:".len()
 }
 
 fn spotify_search_uri(query: &str) -> String {
@@ -271,5 +377,12 @@ mod tests {
             spotify_search_uri("Motörhead"),
             "spotify:search:Mot%C3%B6rhead"
         );
+    }
+
+    #[test]
+    fn validates_spotify_track_ids() {
+        assert!(is_spotify_track_uri("spotify:track:abc123"));
+        assert!(!is_spotify_track_uri("spotify:album:abc123"));
+        assert!(!is_spotify_track_uri("spotify:track:"));
     }
 }
