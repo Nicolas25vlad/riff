@@ -2,13 +2,15 @@
 
 Riff is currently distributed straight from GitHub while the project is in early development.
 
-## One-line install (Linux)
+## Linux and WSL
+
+Install the latest build from `main`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.sh | bash
 ```
 
-The installer checks the Rust/Git requirements and provisions the native Linux audio build dependencies on Arch/Omarchy, Debian/Ubuntu, and Fedora-family systems when they are missing.
+The installer checks Rust/Git and provisions the native audio build dependencies on Arch/Omarchy, Debian/Ubuntu, Fedora-family systems and WSL distributions based on them.
 
 For Fish, if needed:
 
@@ -16,107 +18,119 @@ For Fish, if needed:
 fish_add_path $HOME/.cargo/bin
 ```
 
-Verify the installation:
+Verify:
 
 ```bash
 riff --version
 riff doctor
+riff tui playlist.riff
+```
+
+### WSL audio
+
+On WSL2 with WSLg, Riff detects the WSL environment and prefers its compiled PulseAudio backend when `PULSE_SERVER` is available. WSLg forwards that audio to the Windows host.
+
+You normally do not need to configure audio manually. To inspect the environment:
+
+```bash
+printf '%s\n' "$WSL_DISTRO_NAME" "$PULSE_SERVER"
+```
+
+If you intentionally want to override automatic audio selection, set `RIFF_AUDIO_BACKEND`, for example:
+
+```bash
+RIFF_AUDIO_BACKEND=rodio riff tui playlist.riff
+```
+
+## Windows 11 native
+
+Requirements:
+
+- Git for Windows
+- Rust stable with Cargo
+- a working MSVC Rust toolchain/build environment
+
+From PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.ps1 | iex
+```
+
+Or install directly with Cargo:
+
+```powershell
+cargo install --git https://github.com/Nicolas25vlad/riff --force
+```
+
+Riff uses librespot's Rodio backend on Windows, which outputs through the native Windows audio stack. Spotify credentials/cache are stored under `%LOCALAPPDATA%\Riff\spotify` when available.
+
+Verify:
+
+```powershell
+riff --version
+riff doctor
+riff tui playlist.riff
 ```
 
 ## Project dependencies
 
-When working from a cloned checkout, Riff includes a small dependency helper:
+From a cloned Linux/WSL checkout:
 
 ```bash
 bash scripts/deps.sh install
 ```
 
-That installs missing native/system dependencies and runs `cargo fetch` for the Rust dependency graph.
-
-Other useful commands:
+Useful commands:
 
 ```bash
-# Update Rust crates within Cargo.toml constraints
 bash scripts/deps.sh update
-
-# Validate the dependency graph and compile all targets/features
 bash scripts/deps.sh check
-
-# Install only native/system dependencies
 bash scripts/deps.sh native
-
-# Fetch only Rust crates
 bash scripts/deps.sh rust
 ```
 
-`update` runs `cargo update`, so review `Cargo.lock` before committing dependency changes once the root lockfile is versioned.
+On Windows, use Cargo directly:
 
-## Linux audio dependencies
+```powershell
+cargo fetch
+cargo check --all-targets --all-features
+cargo test --all-features
+```
 
-Riff's first playback backend uses `librespot` with Rodio. On Linux this builds against ALSA.
+## Linux / WSL audio dependencies
+
+Riff compiles Rodio plus PulseAudio support on Linux. Rodio remains the normal Linux default; WSLg prefers PulseAudio automatically.
 
 Manual packages:
 
 ```bash
 # Arch / Omarchy
-sudo pacman -S --needed base-devel alsa-lib pkgconf
+sudo pacman -S --needed base-devel alsa-lib libpulse pkgconf
 
-# Debian / Ubuntu
-sudo apt-get install build-essential libasound2-dev pkg-config
+# Debian / Ubuntu / WSL Ubuntu
+sudo apt-get install build-essential libasound2-dev libpulse-dev pkg-config
 
 # Fedora
-sudo dnf install gcc make alsa-lib-devel pkgconf-pkg-config
+sudo dnf install gcc make alsa-lib-devel pulseaudio-libs-devel pkgconf-pkg-config
 ```
 
-The one-line installer and `bash scripts/deps.sh install` handle these automatically when necessary.
+## Start the player
 
-## Install with Cargo
+Spotify playback requires Spotify Premium because Riff uses `librespot`.
 
-Requirements:
-
-- Git
-- Rust stable and Cargo
-- Linux audio build dependencies listed above
-
-Install the latest `main` build:
-
-```bash
-cargo install --git https://github.com/Nicolas25vlad/riff
-```
-
-Make sure Cargo's binary directory is on your `PATH`:
-
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-For Fish:
-
-```fish
-fish_add_path $HOME/.cargo/bin
-```
-
-## Start the Spotify player
-
-Spotify playback requires a Spotify Premium account because Riff uses `librespot`.
-
-Start Riff as a local Spotify Connect device:
+Headless Spotify Connect device:
 
 ```bash
 riff player
 ```
 
-On the first run, Riff opens Spotify authorization in your browser. After authentication, the session is cached under your XDG cache directory (normally `~/.cache/riff/spotify`) so you do not need to log in every time.
-
-Once the terminal prints that the player is online, select **Riff** from Spotify Connect on any Spotify client connected to your account.
-
-You can also ask Riff to load a Spotify context URI when it starts:
+Play a `.riff` playlist with the terminal UI:
 
 ```bash
-riff player 'spotify:album:1ATL5GLyefJaxhQzSPVrLX'
+riff tui playlist.riff
 ```
 
-Press `Ctrl+C` to stop the headless player.
+On first authentication, Riff opens Spotify authorization in the browser and caches the resulting credentials.
 
 ## Playlist DSL
 
@@ -126,7 +140,7 @@ Create a starter playlist:
 riff init
 ```
 
-That creates `playlist.riff` in the current directory:
+Example:
 
 ```riff
 playlist "my-playlist" {
@@ -142,27 +156,13 @@ riff validate playlist.riff
 riff inspect playlist.riff
 ```
 
-You can also choose the file name when initializing:
-
-```bash
-riff init coding-metal.riff
-```
-
-Riff refuses to overwrite an existing file.
-
-The bridge from textual `.riff` tracks to Spotify search/queue playback is the next player milestone. For now, `.riff` tooling and the Spotify Connect player are separate surfaces.
-
 ## Update
-
-Until packaged releases are available, update by reinstalling from GitHub:
 
 ```bash
 cargo install --git https://github.com/Nicolas25vlad/riff --force
 ```
 
-You can also rerun the one-line installer. It uses `--force`, so an existing installation is replaced by the latest `main` build.
-
-A versioned root `Cargo.lock` and fully locked installs are tracked in issue #13. The known `librespot 0.8.0`/`vergen` resolution problem is pinned explicitly in `Cargo.toml` in the meantime.
+You can also rerun the platform installer.
 
 ## Uninstall
 
@@ -172,6 +172,8 @@ cargo uninstall riff
 
 ## Build from source
 
+Linux / WSL:
+
 ```bash
 git clone https://github.com/Nicolas25vlad/riff.git
 cd riff
@@ -179,12 +181,12 @@ bash scripts/deps.sh install
 cargo build --release
 ```
 
-The resulting binary will be available at:
+Windows PowerShell:
 
-```text
-target/release/riff
+```powershell
+git clone https://github.com/Nicolas25vlad/riff.git
+cd riff
+cargo build --release
 ```
 
-## Current limitations
-
-The v0.2 player foundation provides local Spotify Connect playback and the existing playlist DSL tools. Direct `.riff` resolution, queue control, the Ratatui interface, album artwork and audio-reactive visualization are tracked as subsequent milestones.
+The binary is written under `target/release/` (`riff` on Unix-like systems, `riff.exe` on Windows).

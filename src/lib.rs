@@ -1,6 +1,7 @@
 use std::{fmt, fs, io, io::Write, path::PathBuf};
 
 pub mod fuzzy;
+pub mod platform;
 pub mod player;
 
 const DEFAULT_PLAYLIST: &str = r#"playlist "my-playlist" {
