@@ -2,9 +2,9 @@ use std::{fmt, fs, path::PathBuf};
 
 pub mod player;
 
-const DEFAULT_PLAYLIST: &str = r#"playlist \"my-playlist\" {
-    track \"Black Sabbath - War Pigs\"
-    track \"Dio - Holy Diver\"
+const DEFAULT_PLAYLIST: &str = r#"playlist "my-playlist" {
+    track "Black Sabbath - War Pigs"
+    track "Dio - Holy Diver"
 }
 "#;
 
@@ -16,6 +16,7 @@ pub enum Command {
     Init(PathBuf),
     Validate(PathBuf),
     Inspect(PathBuf),
+    Play(PathBuf),
     Player(Option<String>),
 }
 
@@ -30,6 +31,7 @@ impl Command {
             [cmd, path] if cmd == "init" => Ok(Self::Init(path.into())),
             [cmd, path] if cmd == "validate" => Ok(Self::Validate(path.into())),
             [cmd, path] if cmd == "inspect" => Ok(Self::Inspect(path.into())),
+            [cmd, path] if cmd == "play" => Ok(Self::Play(path.into())),
             [cmd] if cmd == "player" => Ok(Self::Player(None)),
             [cmd, uri] if cmd == "player" => Ok(Self::Player(Some(uri.clone()))),
             _ => Err(RiffError::Usage(
@@ -187,6 +189,27 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
                 ))
             }
         }
+        Command::Play(path) => {
+            let source = fs::read_to_string(&path)?;
+            let playlist = Playlist::parse(&source)?;
+            if playlist.tracks.is_empty() {
+                return Err(RiffError::Parse("playlist has no tracks to play".into()));
+            }
+
+            println!(
+                "Loading `{}` from {} ({} tracks)...",
+                playlist.name,
+                path.display(),
+                playlist.tracks.len()
+            );
+
+            let options = player::PlayerOptions {
+                track_queries: playlist.tracks,
+                ..player::PlayerOptions::default()
+            };
+            player::run(options).await.map_err(RiffError::Player)?;
+            Ok(String::new())
+        }
         Command::Player(context_uri) => {
             let options = player::PlayerOptions {
                 context_uri,
@@ -205,7 +228,8 @@ fn init(path: PathBuf) -> Result<String, RiffError> {
 
     fs::write(&path, DEFAULT_PLAYLIST)?;
     Ok(format!(
-        "✓ created {}\n\nNext:\n  riff validate {}\n  riff inspect {}",
+        "✓ created {}\n\nNext:\n  riff validate {}\n  riff inspect {}\n  riff play {}",
+        path.display(),
         path.display(),
         path.display(),
         path.display()
@@ -214,14 +238,14 @@ fn init(path: PathBuf) -> Result<String, RiffError> {
 
 pub fn help() -> String {
     format!(
-        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]       Create a starter playlist (default: playlist.riff)\n  doctor            Check the local Riff environment\n  validate <file>   Validate a .riff playlist\n  inspect <file>    Parse and print a .riff playlist\n  player [uri]      Start Riff as a local Spotify Connect player\n  help              Print this help\n  version           Print version",
+        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]       Create a starter playlist (default: playlist.riff)\n  doctor            Check the local Riff environment\n  validate <file>   Validate a .riff playlist\n  inspect <file>    Parse and print a .riff playlist\n  play <file>       Resolve a .riff playlist on Spotify and start playback\n  player [uri]      Start Riff as a local Spotify Connect player\n  help              Print this help\n  version           Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
 
 fn doctor() -> String {
     format!(
-        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      player core available (Premium required)\n  playback     librespot / local audio backend",
+        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      player + .riff resolution available (Premium required)\n  playback     librespot / local audio backend",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
@@ -243,6 +267,13 @@ mod tests {
 
         let playlist = Playlist::parse(source).expect("playlist should parse");
         assert_eq!(playlist.name, "coding-metal");
+        assert_eq!(playlist.tracks.len(), 2);
+    }
+
+    #[test]
+    fn default_playlist_template_is_valid() {
+        let playlist = Playlist::parse(DEFAULT_PLAYLIST).expect("default template should parse");
+        assert_eq!(playlist.name, "my-playlist");
         assert_eq!(playlist.tracks.len(), 2);
     }
 
@@ -276,6 +307,15 @@ mod tests {
         assert_eq!(
             Command::parse(&args).expect("command should parse"),
             Command::Init(PathBuf::from("playlist.riff"))
+        );
+    }
+
+    #[test]
+    fn parses_play_command() {
+        let args = vec!["play".to_string(), "coding-metal.riff".to_string()];
+        assert_eq!(
+            Command::parse(&args).expect("command should parse"),
+            Command::Play(PathBuf::from("coding-metal.riff"))
         );
     }
 

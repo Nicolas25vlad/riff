@@ -13,6 +13,7 @@ use librespot::{
         player::Player,
     },
 };
+use serde::Deserialize;
 
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const OAUTH_SCOPES: &[&str] = &[
@@ -20,10 +21,12 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
+const SEARCH_TOKEN_SCOPES: &str = "streaming";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerOptions {
     pub context_uri: Option<String>,
+    pub track_queries: Vec<String>,
     pub device_name: String,
 }
 
@@ -31,6 +34,7 @@ impl Default for PlayerOptions {
     fn default() -> Self {
         Self {
             context_uri: None,
+            track_queries: Vec::new(),
             device_name: "Riff".to_string(),
         }
     }
@@ -91,10 +95,22 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         .activate()
         .map_err(|err| format!("could not activate Spotify Connect device: {err}"))?;
 
-    if let Some(uri) = options.context_uri {
+    if !options.track_queries.is_empty() {
+        let resolved = resolve_track_queries(&session, &options.track_queries).await?;
+        println!("Resolved {} track(s). Starting playlist...", resolved.len());
+        spirc
+            .load(LoadRequest::from_tracks(
+                resolved.into_iter().map(|track| track.uri).collect(),
+                LoadRequestOptions::default(),
+            ))
+            .map_err(|err| format!("could not load resolved playlist: {err}"))?;
+        spirc
+            .play()
+            .map_err(|err| format!("could not start playlist playback: {err}"))?;
+    } else if let Some(uri) = options.context_uri.as_ref() {
         spirc
             .load(LoadRequest::from_context_uri(
-                uri,
+                uri.clone(),
                 LoadRequestOptions::default(),
             ))
             .map_err(|err| format!("could not load Spotify URI: {err}"))?;
@@ -104,7 +120,9 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     }
 
     println!("Riff player is online as `{}`.", options.device_name);
-    println!("Select it from Spotify Connect and press play in Spotify.");
+    if options.track_queries.is_empty() && options.context_uri.is_none() {
+        println!("Select it from Spotify Connect and press play in Spotify.");
+    }
     println!("Playback diagnostics are enabled. For full logs: RIFF_LOG=debug riff player");
     println!("Press Ctrl+C to stop.");
 
@@ -117,6 +135,100 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
             session.shutdown();
             Ok(())
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedTrack {
+    uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchResponse {
+    tracks: SearchTracks,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchTracks {
+    items: Vec<SearchTrack>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchTrack {
+    uri: String,
+    name: String,
+    artists: Vec<SearchArtist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchArtist {
+    name: String,
+}
+
+async fn resolve_track_queries(
+    session: &Session,
+    queries: &[String],
+) -> Result<Vec<ResolvedTrack>, String> {
+    let token = session
+        .token_provider()
+        .get_token(SEARCH_TOKEN_SCOPES)
+        .await
+        .map_err(|err| format!("could not obtain Spotify search token: {err}"))?;
+
+    let client = reqwest::Client::new();
+    let mut resolved = Vec::with_capacity(queries.len());
+
+    for (index, query) in queries.iter().enumerate() {
+        println!("  [{}/{}] resolving {query}", index + 1, queries.len());
+
+        let response = client
+            .get("https://api.spotify.com/v1/search")
+            .bearer_auth(&token.access_token)
+            .query(&[("q", query.as_str()), ("type", "track"), ("limit", "5")])
+            .send()
+            .await
+            .map_err(|err| format!("Spotify search failed for `{query}`: {err}"))?
+            .error_for_status()
+            .map_err(|err| format!("Spotify rejected search for `{query}`: {err}"))?
+            .json::<SearchResponse>()
+            .await
+            .map_err(|err| format!("could not decode Spotify search for `{query}`: {err}"))?;
+
+        let track = choose_track(query, response.tracks.items)
+            .ok_or_else(|| format!("no Spotify track found for `{query}`"))?;
+        let artists = track
+            .artists
+            .iter()
+            .map(|artist| artist.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        println!("       -> {artists} - {}", track.name);
+        resolved.push(ResolvedTrack { uri: track.uri });
+    }
+
+    Ok(resolved)
+}
+
+fn choose_track(query: &str, tracks: Vec<SearchTrack>) -> Option<SearchTrack> {
+    let (expected_artist, expected_title) = query
+        .split_once(" - ")
+        .map(|(artist, title)| (Some(artist.trim()), title.trim()))
+        .unwrap_or((None, query.trim()));
+
+    let exact_index = tracks.iter().position(|track| {
+        track.name.eq_ignore_ascii_case(expected_title)
+            && expected_artist.is_none_or(|artist| {
+                track
+                    .artists
+                    .iter()
+                    .any(|candidate| candidate.name.eq_ignore_ascii_case(artist))
+            })
+    });
+
+    match exact_index {
+        Some(index) => tracks.into_iter().nth(index),
+        None => tracks.into_iter().next(),
     }
 }
 
@@ -179,8 +291,36 @@ fn secure_cache_dir(_path: &std::path::Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn track(uri: &str, name: &str, artist: &str) -> SearchTrack {
+        SearchTrack {
+            uri: uri.to_string(),
+            name: name.to_string(),
+            artists: vec![SearchArtist {
+                name: artist.to_string(),
+            }],
+        }
+    }
+
     #[test]
     fn default_device_name_is_riff() {
         assert_eq!(PlayerOptions::default().device_name, "Riff");
+    }
+
+    #[test]
+    fn chooses_exact_artist_and_title_when_available() {
+        let tracks = vec![
+            track("spotify:track:wrong", "War Pigs", "Cover Band"),
+            track("spotify:track:right", "War Pigs", "Black Sabbath"),
+        ];
+
+        let selected = choose_track("Black Sabbath - War Pigs", tracks).expect("track expected");
+        assert_eq!(selected.uri, "spotify:track:right");
+    }
+
+    #[test]
+    fn falls_back_to_first_search_result() {
+        let tracks = vec![track("spotify:track:first", "Other Name", "Other Artist")];
+        let selected = choose_track("Unknown - Query", tracks).expect("track expected");
+        assert_eq!(selected.uri, "spotify:track:first");
     }
 }
