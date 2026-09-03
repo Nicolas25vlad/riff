@@ -1,5 +1,6 @@
 use std::{env, fs, path::PathBuf};
 
+use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
     core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session},
@@ -36,6 +37,8 @@ impl Default for PlayerOptions {
 }
 
 pub async fn run(options: PlayerOptions) -> Result<(), String> {
+    init_logging();
+
     let cache_dir = cache_dir()?;
     let files_dir = cache_dir.join("files");
     fs::create_dir_all(&files_dir)
@@ -101,16 +104,28 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     }
 
     println!("Riff player is online as `{}`.", options.device_name);
-    println!("Select it from Spotify Connect, or press Ctrl+C to stop.");
+    println!("Select it from Spotify Connect and press play in Spotify.");
+    println!("Playback diagnostics are enabled. For full logs: RIFF_LOG=debug riff player");
+    println!("Press Ctrl+C to stop.");
 
     tokio::select! {
-        _ = spirc_task => Ok(()),
+        result = spirc_task => {
+            match result {
+                Ok(()) => Err("Spotify Connect stopped unexpectedly. Re-run with RIFF_LOG=debug riff player for details.".to_string()),
+                Err(err) => Err(format!("Spotify Connect stopped: {err}. Re-run with RIFF_LOG=debug riff player for details.")),
+            }
+        },
         result = tokio::signal::ctrl_c() => {
             result.map_err(|err| format!("could not listen for Ctrl+C: {err}"))?;
             session.shutdown();
             Ok(())
         }
     }
+}
+
+fn init_logging() {
+    let env = Env::default().filter_or("RIFF_LOG", "librespot=info");
+    let _ = env_logger::Builder::from_env(env).try_init();
 }
 
 fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
