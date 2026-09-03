@@ -418,9 +418,7 @@ mod tests {
 
     #[test]
     fn validates_spotify_track_ids() {
-        assert!(is_spotify_track_uri(
-            "spotify:track:6tRHtqNabJIQVXbyY9AnMU"
-        ));
+        assert!(is_spotify_track_uri("spotify:track:6tRHtqNabJIQVXbyY9AnMU"));
         assert!(!is_spotify_track_uri(
             "spotify:album:6tRHtqNabJIQVXbyY9AnMU"
         ));
