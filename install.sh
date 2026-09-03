@@ -54,7 +54,7 @@ fi
 install_linux_audio_deps
 
 say "Installing Riff from GitHub..."
-cargo install --git "$REPO" --locked --force
+cargo install --git "$REPO" --force
 
 if ! command -v riff >/dev/null 2>&1; then
   warn "Riff was installed to $BIN_DIR, but that directory is not currently in PATH."
