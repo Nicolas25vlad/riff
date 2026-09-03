@@ -199,7 +199,12 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             continue;
         }
 
-        println!("  [{}/{}] resolving {}", index + 1, tracks.len(), track.label);
+        println!(
+            "  [{}/{}] resolving {}",
+            index + 1,
+            tracks.len(),
+            track.label
+        );
         let candidates = search_with_session(session, &track.label, 1).await?;
         let candidate = candidates
             .into_iter()
