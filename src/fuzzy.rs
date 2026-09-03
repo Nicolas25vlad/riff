@@ -11,8 +11,16 @@ pub fn rank_candidates(
     let normalized_query = normalize(query);
 
     for candidate in &mut candidates {
-        let title = candidate.metadata.get("title").map(String::as_str).unwrap_or("");
-        let artist = candidate.metadata.get("artist").map(String::as_str).unwrap_or("");
+        let title = candidate
+            .metadata
+            .get("title")
+            .map(String::as_str)
+            .unwrap_or("");
+        let artist = candidate
+            .metadata
+            .get("artist")
+            .map(String::as_str)
+            .unwrap_or("");
         let combined = if artist.is_empty() {
             title.to_string()
         } else {
@@ -31,7 +39,9 @@ pub fn rank_candidates(
             fuzzy_score(&normalized_query, &normalize(&combined), &normalize(title))
         };
 
-        candidate.metadata.insert("match".into(), score.to_string());
+        candidate
+            .metadata
+            .insert("match".into(), score.to_string());
     }
 
     candidates.retain(|candidate| {
@@ -143,9 +153,21 @@ pub fn normalize(value: &str) -> String {
 fn version_penalty(candidate: &SearchCandidate) -> u8 {
     let haystack = format!(
         "{} {} {}",
-        candidate.metadata.get("title").map(String::as_str).unwrap_or(""),
-        candidate.metadata.get("album").map(String::as_str).unwrap_or(""),
-        candidate.metadata.get("version").map(String::as_str).unwrap_or("")
+        candidate
+            .metadata
+            .get("title")
+            .map(String::as_str)
+            .unwrap_or(""),
+        candidate
+            .metadata
+            .get("album")
+            .map(String::as_str)
+            .unwrap_or(""),
+        candidate
+            .metadata
+            .get("version")
+            .map(String::as_str)
+            .unwrap_or("")
     )
     .to_lowercase();
 
