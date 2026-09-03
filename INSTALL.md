@@ -23,6 +23,34 @@ riff --version
 riff doctor
 ```
 
+## Project dependencies
+
+When working from a cloned checkout, Riff includes a small dependency helper:
+
+```bash
+bash scripts/deps.sh install
+```
+
+That installs missing native/system dependencies and runs `cargo fetch` for the Rust dependency graph.
+
+Other useful commands:
+
+```bash
+# Update Rust crates within Cargo.toml constraints
+bash scripts/deps.sh update
+
+# Validate the dependency graph and compile all targets/features
+bash scripts/deps.sh check
+
+# Install only native/system dependencies
+bash scripts/deps.sh native
+
+# Fetch only Rust crates
+bash scripts/deps.sh rust
+```
+
+`update` runs `cargo update`, so review `Cargo.lock` before committing dependency changes once the root lockfile is versioned.
+
 ## Linux audio dependencies
 
 Riff's first playback backend uses `librespot` with Rodio. On Linux this builds against ALSA.
@@ -40,7 +68,7 @@ sudo apt-get install build-essential libasound2-dev pkg-config
 sudo dnf install gcc make alsa-lib-devel pkgconf-pkg-config
 ```
 
-The one-line installer handles these automatically when necessary.
+The one-line installer and `bash scripts/deps.sh install` handle these automatically when necessary.
 
 ## Install with Cargo
 
@@ -147,6 +175,7 @@ cargo uninstall riff
 ```bash
 git clone https://github.com/Nicolas25vlad/riff.git
 cd riff
+bash scripts/deps.sh install
 cargo build --release
 ```
 
