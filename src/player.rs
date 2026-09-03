@@ -4,7 +4,7 @@ use env_logger::Env;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
     core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session},
-    oauth::{OAuthClient, OAuthClientBuilder},
+    oauth::OAuthClientBuilder,
     playback::{
         audio_backend,
         config::{AudioFormat, PlayerConfig},
@@ -13,7 +13,6 @@ use librespot::{
         player::Player,
     },
 };
-use serde::Deserialize;
 
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const OAUTH_SCOPES: &[&str] = &[
@@ -21,7 +20,6 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
-const OAUTH_REFRESH_TOKEN_FILE: &str = "oauth-refresh-token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerOptions {
@@ -71,16 +69,9 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     )
     .map_err(|err| format!("could not initialize Spotify cache: {err}"))?;
 
-    let (credentials, web_api_token) = if options.track_queries.is_empty() {
-        let credentials = match cache.credentials() {
-            Some(credentials) => credentials,
-            None => oauth_credentials(&session_config)?,
-        };
-        (credentials, None)
-    } else {
-        let (credentials, access_token) =
-            oauth_credentials_with_web_token(&session_config, &cache_dir)?;
-        (credentials, Some(access_token))
+    let credentials = match cache.credentials() {
+        Some(credentials) => credentials,
+        None => oauth_credentials(&session_config)?,
     };
 
     let session = Session::new(session_config, Some(cache));
@@ -103,10 +94,7 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         .map_err(|err| format!("could not activate Spotify Connect device: {err}"))?;
 
     if !options.track_queries.is_empty() {
-        let access_token = web_api_token
-            .as_deref()
-            .ok_or_else(|| "Spotify Web API token was not initialized".to_string())?;
-        let resolved = resolve_track_queries(access_token, &options.track_queries).await?;
+        let resolved = resolve_track_queries(&session, &options.track_queries).await?;
         println!("Resolved {} track(s). Starting playlist...", resolved.len());
         spirc
             .load(LoadRequest::from_tracks(
@@ -153,87 +141,56 @@ struct ResolvedTrack {
     uri: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct SearchResponse {
-    tracks: SearchTracks,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchTracks {
-    items: Vec<SearchTrack>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchTrack {
-    uri: String,
-    name: String,
-    artists: Vec<SearchArtist>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchArtist {
-    name: String,
-}
-
 async fn resolve_track_queries(
-    access_token: &str,
+    session: &Session,
     queries: &[String],
 ) -> Result<Vec<ResolvedTrack>, String> {
-    let client = reqwest::Client::new();
     let mut resolved = Vec::with_capacity(queries.len());
 
     for (index, query) in queries.iter().enumerate() {
         println!("  [{}/{}] resolving {query}", index + 1, queries.len());
 
-        let response = client
-            .get("https://api.spotify.com/v1/search")
-            .bearer_auth(access_token)
-            .query(&[("q", query.as_str()), ("type", "track"), ("limit", "5")])
-            .send()
+        let search_uri = spotify_search_uri(query);
+        let context = session
+            .spclient()
+            .get_context(&search_uri)
             .await
-            .map_err(|err| format!("Spotify search failed for `{query}`: {err}"))?
-            .error_for_status()
-            .map_err(|err| format!("Spotify rejected search for `{query}`: {err}"))?
-            .json::<SearchResponse>()
-            .await
-            .map_err(|err| format!("could not decode Spotify search for `{query}`: {err}"))?;
+            .map_err(|err| format!("Spotify internal search failed for `{query}`: {err}"))?;
 
-        let track = choose_track(query, response.tracks.items)
+        let uri = context
+            .pages
+            .into_iter()
+            .flat_map(|page| page.tracks)
+            .filter_map(|track| track.uri)
+            .find(|uri| uri.starts_with("spotify:track:"))
             .ok_or_else(|| format!("no Spotify track found for `{query}`"))?;
-        let artists = track
-            .artists
-            .iter()
-            .map(|artist| artist.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
 
-        println!("       -> {artists} - {}", track.name);
-        resolved.push(ResolvedTrack { uri: track.uri });
+        println!("       -> {uri}");
+        resolved.push(ResolvedTrack { uri });
     }
 
     Ok(resolved)
 }
 
-fn choose_track(query: &str, tracks: Vec<SearchTrack>) -> Option<SearchTrack> {
-    let (expected_artist, expected_title) = query
-        .split_once(" - ")
-        .map(|(artist, title)| (Some(artist.trim()), title.trim()))
-        .unwrap_or((None, query.trim()));
+fn spotify_search_uri(query: &str) -> String {
+    let mut encoded = String::with_capacity(query.len());
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
-    let exact_index = tracks.iter().position(|track| {
-        track.name.eq_ignore_ascii_case(expected_title)
-            && expected_artist.is_none_or(|artist| {
-                track
-                    .artists
-                    .iter()
-                    .any(|candidate| candidate.name.eq_ignore_ascii_case(artist))
-            })
-    });
-
-    match exact_index {
-        Some(index) => tracks.into_iter().nth(index),
-        None => tracks.into_iter().next(),
+    for byte in query.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b' ' => encoded.push('+'),
+            _ => {
+                encoded.push('%');
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
     }
+
+    format!("spotify:search:{encoded}")
 }
 
 fn init_logging() {
@@ -241,7 +198,9 @@ fn init_logging() {
     let _ = env_logger::Builder::from_env(env).try_init();
 }
 
-fn oauth_client(session_config: &SessionConfig) -> Result<OAuthClient, String> {
+fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
+    println!("No cached Spotify login found. Opening Spotify authorization in your browser...");
+
     OAuthClientBuilder::new(
         &session_config.client_id,
         OAUTH_REDIRECT_URI,
@@ -250,56 +209,10 @@ fn oauth_client(session_config: &SessionConfig) -> Result<OAuthClient, String> {
     .open_in_browser()
     .with_custom_message("Riff is connected. You can close this tab and return to the terminal.")
     .build()
-    .map_err(|err| format!("could not initialize Spotify OAuth: {err}"))
-}
-
-fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
-    println!("No cached Spotify login found. Opening Spotify authorization in your browser...");
-
-    oauth_client(session_config)?
-        .get_access_token()
-        .map(|token| Credentials::with_access_token(token.access_token))
-        .map_err(|err| format!("Spotify authorization failed: {err}"))
-}
-
-fn oauth_credentials_with_web_token(
-    session_config: &SessionConfig,
-    cache_dir: &std::path::Path,
-) -> Result<(Credentials, String), String> {
-    let client = oauth_client(session_config)?;
-    let refresh_path = cache_dir.join(OAUTH_REFRESH_TOKEN_FILE);
-    let cached_refresh = fs::read_to_string(&refresh_path)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    let token = match cached_refresh.as_deref() {
-        Some(refresh_token) => match client.refresh_token(refresh_token) {
-            Ok(token) => token,
-            Err(err) => {
-                println!(
-                    "Cached Spotify OAuth token could not be refreshed ({err}). Re-authorizing..."
-                );
-                client
-                    .get_access_token()
-                    .map_err(|err| format!("Spotify authorization failed: {err}"))?
-            }
-        },
-        None => {
-            println!("Spotify Web API authorization is required for .riff track resolution.");
-            client
-                .get_access_token()
-                .map_err(|err| format!("Spotify authorization failed: {err}"))?
-        }
-    };
-
-    if !token.refresh_token.is_empty() {
-        write_secret_file(&refresh_path, token.refresh_token.as_bytes())?;
-    }
-
-    let access_token = token.access_token;
-    let credentials = Credentials::with_access_token(access_token.clone());
-    Ok((credentials, access_token))
+    .map_err(|err| format!("could not initialize Spotify OAuth: {err}"))?
+    .get_access_token()
+    .map(|token| Credentials::with_access_token(token.access_token))
+    .map_err(|err| format!("Spotify authorization failed: {err}"))
 }
 
 fn cache_dir() -> Result<PathBuf, String> {
@@ -335,47 +248,9 @@ fn secure_cache_dir(_path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn write_secret_file(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true).mode(0o600);
-    use std::io::Write;
-    let mut file = options
-        .open(path)
-        .map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))?;
-    file.write_all(contents)
-        .map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))?;
-
-    let mut permissions = file
-        .metadata()
-        .map_err(|err| format!("could not inspect OAuth token permissions: {err}"))?
-        .permissions();
-    permissions.set_mode(0o600);
-    file.set_permissions(permissions)
-        .map_err(|err| format!("could not secure OAuth token file: {err}"))
-}
-
-#[cfg(not(unix))]
-fn write_secret_file(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
-    fs::write(path, contents)
-        .map_err(|err| format!("could not store Spotify OAuth refresh token: {err}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn track(uri: &str, name: &str, artist: &str) -> SearchTrack {
-        SearchTrack {
-            uri: uri.to_string(),
-            name: name.to_string(),
-            artists: vec![SearchArtist {
-                name: artist.to_string(),
-            }],
-        }
-    }
 
     #[test]
     fn default_device_name_is_riff() {
@@ -383,20 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn chooses_exact_artist_and_title_when_available() {
-        let tracks = vec![
-            track("spotify:track:wrong", "War Pigs", "Cover Band"),
-            track("spotify:track:right", "War Pigs", "Black Sabbath"),
-        ];
-
-        let selected = choose_track("Black Sabbath - War Pigs", tracks).expect("track expected");
-        assert_eq!(selected.uri, "spotify:track:right");
+    fn builds_spotify_search_uri() {
+        assert_eq!(
+            spotify_search_uri("Black Sabbath - War Pigs"),
+            "spotify:search:Black+Sabbath+-+War+Pigs"
+        );
     }
 
     #[test]
-    fn falls_back_to_first_search_result() {
-        let tracks = vec![track("spotify:track:first", "Other Name", "Other Artist")];
-        let selected = choose_track("Unknown - Query", tracks).expect("track expected");
-        assert_eq!(selected.uri, "spotify:track:first");
+    fn percent_encodes_non_ascii_search_text() {
+        assert_eq!(spotify_search_uri("Motörhead"), "spotify:search:Mot%C3%B6rhead");
     }
 }
