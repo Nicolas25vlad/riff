@@ -132,9 +132,18 @@ enum Control {
 #[derive(Debug)]
 enum PlayerUpdate {
     Status(PlaybackStatus),
-    Track { uri: String, position_ms: u32 },
-    Position { uri: String, position_ms: u32 },
-    Artwork { uri: String, image: Arc<DynamicImage> },
+    Track {
+        uri: String,
+        position_ms: u32,
+    },
+    Position {
+        uri: String,
+        position_ms: u32,
+    },
+    Artwork {
+        uri: String,
+        image: Arc<DynamicImage>,
+    },
     Error(String),
 }
 
@@ -453,12 +462,7 @@ async fn run_terminal(
     let loop_result = async {
         loop {
             while let Ok(update) = updates.try_recv() {
-                apply_update(
-                    &mut state,
-                    update,
-                    &picker,
-                    rendered_art_tx.clone(),
-                )?;
+                apply_update(&mut state, update, &picker, rendered_art_tx.clone())?;
             }
             while let Ok(artwork) = rendered_art_rx.try_recv() {
                 if state.current_uri.as_deref() == Some(artwork.uri.as_str()) {
@@ -518,7 +522,9 @@ fn apply_update(
             state.status = status;
             state.message = match status {
                 PlaybackStatus::Starting => "Starting playback...".to_string(),
-                PlaybackStatus::Playing => "space pause  h/← previous  l/→ next  q quit".to_string(),
+                PlaybackStatus::Playing => {
+                    "space pause  h/← previous  l/→ next  q quit".to_string()
+                }
                 PlaybackStatus::Paused => {
                     "paused · space resume  h/← previous  l/→ next  q quit".to_string()
                 }
@@ -676,7 +682,11 @@ fn draw_metadata(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("{}  {}", state.status.glyph(), state.status.label().to_uppercase()),
+            format!(
+                "{}  {}",
+                state.status.glyph(),
+                state.status.label().to_uppercase()
+            ),
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
