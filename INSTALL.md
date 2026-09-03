@@ -53,7 +53,7 @@ Requirements:
 Install the latest `main` build:
 
 ```bash
-cargo install --git https://github.com/Nicolas25vlad/riff --locked
+cargo install --git https://github.com/Nicolas25vlad/riff
 ```
 
 Make sure Cargo's binary directory is on your `PATH`:
@@ -129,10 +129,12 @@ The bridge from textual `.riff` tracks to Spotify search/queue playback is the n
 Until packaged releases are available, update by reinstalling from GitHub:
 
 ```bash
-cargo install --git https://github.com/Nicolas25vlad/riff --locked --force
+cargo install --git https://github.com/Nicolas25vlad/riff --force
 ```
 
 You can also rerun the one-line installer. It uses `--force`, so an existing installation is replaced by the latest `main` build.
+
+A versioned root `Cargo.lock` and fully locked installs are tracked in issue #13. The known `librespot 0.8.0`/`vergen` resolution problem is pinned explicitly in `Cargo.toml` in the meantime.
 
 ## Uninstall
 
