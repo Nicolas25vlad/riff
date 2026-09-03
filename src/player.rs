@@ -2,12 +2,7 @@ use std::{env, fs, path::PathBuf};
 
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
-    core::{
-        authentication::Credentials,
-        cache::Cache,
-        config::SessionConfig,
-        session::Session,
-    },
+    core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session},
     oauth::OAuthClientBuilder,
     playback::{
         audio_backend,
@@ -75,7 +70,8 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     };
 
     let session = Session::new(session_config, Some(cache));
-    let mixer = mixer_builder(mixer_config).map_err(|err| format!("could not start mixer: {err}"))?;
+    let mixer =
+        mixer_builder(mixer_config).map_err(|err| format!("could not start mixer: {err}"))?;
     let player = Player::new(
         player_config,
         session.clone(),
@@ -83,15 +79,10 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         move || sink_builder(None, audio_format),
     );
 
-    let (spirc, spirc_task) = Spirc::new(
-        connect_config,
-        session.clone(),
-        credentials,
-        player,
-        mixer,
-    )
-    .await
-    .map_err(|err| format!("could not start Spotify Connect: {err}"))?;
+    let (spirc, spirc_task) =
+        Spirc::new(connect_config, session.clone(), credentials, player, mixer)
+            .await
+            .map_err(|err| format!("could not start Spotify Connect: {err}"))?;
 
     spirc
         .activate()
