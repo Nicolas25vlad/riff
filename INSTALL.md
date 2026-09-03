@@ -8,7 +8,7 @@ Riff is currently distributed straight from GitHub while the project is in early
 curl -fsSL https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.sh | bash
 ```
 
-The installer checks for the basic requirements, installs Riff through Cargo, and prints the exact PATH command if `$HOME/.cargo/bin` is not available in your current shell.
+The installer checks the Rust/Git requirements and provisions the native Linux audio build dependencies on Arch/Omarchy, Debian/Ubuntu, and Fedora-family systems when they are missing.
 
 For Fish, if needed:
 
@@ -23,17 +23,65 @@ riff --version
 riff doctor
 ```
 
+## Project dependencies
+
+When working from a cloned checkout, Riff includes a small dependency helper:
+
+```bash
+bash scripts/deps.sh install
+```
+
+That installs missing native/system dependencies and runs `cargo fetch` for the Rust dependency graph.
+
+Other useful commands:
+
+```bash
+# Update Rust crates within Cargo.toml constraints
+bash scripts/deps.sh update
+
+# Validate the dependency graph and compile all targets/features
+bash scripts/deps.sh check
+
+# Install only native/system dependencies
+bash scripts/deps.sh native
+
+# Fetch only Rust crates
+bash scripts/deps.sh rust
+```
+
+`update` runs `cargo update`, so review `Cargo.lock` before committing dependency changes once the root lockfile is versioned.
+
+## Linux audio dependencies
+
+Riff's first playback backend uses `librespot` with Rodio. On Linux this builds against ALSA.
+
+Manual packages:
+
+```bash
+# Arch / Omarchy
+sudo pacman -S --needed base-devel alsa-lib pkgconf
+
+# Debian / Ubuntu
+sudo apt-get install build-essential libasound2-dev pkg-config
+
+# Fedora
+sudo dnf install gcc make alsa-lib-devel pkgconf-pkg-config
+```
+
+The one-line installer and `bash scripts/deps.sh install` handle these automatically when necessary.
+
 ## Install with Cargo
 
 Requirements:
 
 - Git
 - Rust stable and Cargo
+- Linux audio build dependencies listed above
 
 Install the latest `main` build:
 
 ```bash
-cargo install --git https://github.com/Nicolas25vlad/riff --locked
+cargo install --git https://github.com/Nicolas25vlad/riff
 ```
 
 Make sure Cargo's binary directory is on your `PATH`:
@@ -48,7 +96,29 @@ For Fish:
 fish_add_path $HOME/.cargo/bin
 ```
 
-## First run
+## Start the Spotify player
+
+Spotify playback requires a Spotify Premium account because Riff uses `librespot`.
+
+Start Riff as a local Spotify Connect device:
+
+```bash
+riff player
+```
+
+On the first run, Riff opens Spotify authorization in your browser. After authentication, the session is cached under your XDG cache directory (normally `~/.cache/riff/spotify`) so you do not need to log in every time.
+
+Once the terminal prints that the player is online, select **Riff** from Spotify Connect on any Spotify client connected to your account.
+
+You can also ask Riff to load a Spotify context URI when it starts:
+
+```bash
+riff player 'spotify:album:1ATL5GLyefJaxhQzSPVrLX'
+```
+
+Press `Ctrl+C` to stop the headless player.
+
+## Playlist DSL
 
 Create a starter playlist:
 
@@ -65,15 +135,10 @@ playlist "my-playlist" {
 }
 ```
 
-Validate it:
+Validate and inspect it:
 
 ```bash
 riff validate playlist.riff
-```
-
-Inspect the parsed playlist:
-
-```bash
 riff inspect playlist.riff
 ```
 
@@ -85,15 +150,19 @@ riff init coding-metal.riff
 
 Riff refuses to overwrite an existing file.
 
+The bridge from textual `.riff` tracks to Spotify search/queue playback is the next player milestone. For now, `.riff` tooling and the Spotify Connect player are separate surfaces.
+
 ## Update
 
 Until packaged releases are available, update by reinstalling from GitHub:
 
 ```bash
-cargo install --git https://github.com/Nicolas25vlad/riff --locked --force
+cargo install --git https://github.com/Nicolas25vlad/riff --force
 ```
 
 You can also rerun the one-line installer. It uses `--force`, so an existing installation is replaced by the latest `main` build.
+
+A versioned root `Cargo.lock` and fully locked installs are tracked in issue #13. The known `librespot 0.8.0`/`vergen` resolution problem is pinned explicitly in `Cargo.toml` in the meantime.
 
 ## Uninstall
 
@@ -106,6 +175,7 @@ cargo uninstall riff
 ```bash
 git clone https://github.com/Nicolas25vlad/riff.git
 cd riff
+bash scripts/deps.sh install
 cargo build --release
 ```
 
@@ -117,4 +187,4 @@ target/release/riff
 
 ## Current limitations
 
-The current v0.1 foundation implements the playlist DSL tooling only. Spotify authentication, `librespot` playback, the Ratatui interface, album art and audio visualization are planned but are not implemented yet.
+The v0.2 player foundation provides local Spotify Connect playback and the existing playlist DSL tools. Direct `.riff` resolution, queue control, the Ratatui interface, album artwork and audio-reactive visualization are tracked as subsequent milestones.

@@ -1,5 +1,7 @@
 use std::{fmt, fs, path::PathBuf};
 
+pub mod player;
+
 const DEFAULT_PLAYLIST: &str = r#"playlist \"my-playlist\" {
     track \"Black Sabbath - War Pigs\"
     track \"Dio - Holy Diver\"
@@ -14,6 +16,7 @@ pub enum Command {
     Init(PathBuf),
     Validate(PathBuf),
     Inspect(PathBuf),
+    Player(Option<String>),
 }
 
 impl Command {
@@ -27,6 +30,8 @@ impl Command {
             [cmd, path] if cmd == "init" => Ok(Self::Init(path.into())),
             [cmd, path] if cmd == "validate" => Ok(Self::Validate(path.into())),
             [cmd, path] if cmd == "inspect" => Ok(Self::Inspect(path.into())),
+            [cmd] if cmd == "player" => Ok(Self::Player(None)),
+            [cmd, uri] if cmd == "player" => Ok(Self::Player(Some(uri.clone()))),
             _ => Err(RiffError::Usage(
                 "unknown command or invalid arguments".into(),
             )),
@@ -120,6 +125,7 @@ pub enum RiffError {
     Parse(String),
     Usage(String),
     AlreadyExists(PathBuf),
+    Player(String),
 }
 
 impl fmt::Display for RiffError {
@@ -133,6 +139,7 @@ impl fmt::Display for RiffError {
                 "{} already exists; choose another path or remove it first",
                 path.display()
             ),
+            Self::Player(msg) => write!(f, "player error: {msg}"),
         }
     }
 }
@@ -143,7 +150,7 @@ impl From<std::io::Error> for RiffError {
     }
 }
 
-pub fn run(command: Command) -> Result<String, RiffError> {
+pub async fn run(command: Command) -> Result<String, RiffError> {
     match command {
         Command::Help => Ok(help()),
         Command::Version => Ok(format!("riff {}", env!("CARGO_PKG_VERSION"))),
@@ -180,6 +187,14 @@ pub fn run(command: Command) -> Result<String, RiffError> {
                 ))
             }
         }
+        Command::Player(context_uri) => {
+            let options = player::PlayerOptions {
+                context_uri,
+                ..player::PlayerOptions::default()
+            };
+            player::run(options).await.map_err(RiffError::Player)?;
+            Ok(String::new())
+        }
     }
 }
 
@@ -199,14 +214,14 @@ fn init(path: PathBuf) -> Result<String, RiffError> {
 
 pub fn help() -> String {
     format!(
-        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]      Create a starter playlist (default: playlist.riff)\n  doctor           Check the local Riff environment\n  validate <file>  Validate a .riff playlist\n  inspect <file>   Parse and print a .riff playlist\n  help             Print this help\n  version          Print version",
+        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]       Create a starter playlist (default: playlist.riff)\n  doctor            Check the local Riff environment\n  validate <file>   Validate a .riff playlist\n  inspect <file>    Parse and print a .riff playlist\n  player [uri]      Start Riff as a local Spotify Connect player\n  help              Print this help\n  version           Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
 
 fn doctor() -> String {
     format!(
-        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      not configured yet\n  playback     not implemented yet",
+        "Riff doctor\n  version      {}\n  platform     {}-{}\n  playlist DSL ready\n  spotify      player core available (Premium required)\n  playback     librespot / local audio backend",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
@@ -261,6 +276,18 @@ mod tests {
         assert_eq!(
             Command::parse(&args).expect("command should parse"),
             Command::Init(PathBuf::from("playlist.riff"))
+        );
+    }
+
+    #[test]
+    fn parses_player_with_context_uri() {
+        let args = vec![
+            "player".to_string(),
+            "spotify:album:1ATL5GLyefJaxhQzSPVrLX".to_string(),
+        ];
+        assert_eq!(
+            Command::parse(&args).expect("command should parse"),
+            Command::Player(Some("spotify:album:1ATL5GLyefJaxhQzSPVrLX".to_string()))
         );
     }
 }

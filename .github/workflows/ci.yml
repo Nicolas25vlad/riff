@@ -16,8 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate installer
-        run: bash -n install.sh
+      - name: Validate shell helpers
+        run: bash -n install.sh scripts/deps.sh
+
+      - name: Install Linux audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -26,6 +29,9 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Check dependency helper
+        run: bash scripts/deps.sh check
 
       - name: Check formatting
         run: cargo fmt --all -- --check
