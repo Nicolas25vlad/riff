@@ -1,4 +1,9 @@
-use std::{fs, io, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs, io,
+    sync::Arc,
+    time::Duration,
+};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -6,9 +11,14 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use env_logger::Env;
+use image::DynamicImage;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
-    core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session},
+    core::{
+        FileId, SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig,
+        session::Session,
+    },
+    metadata::{Metadata, Track as SpotifyTrack},
     oauth::OAuthClientBuilder,
     playback::{
         config::{AudioFormat, PlayerConfig},
@@ -20,13 +30,14 @@ use librespot::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect, Size},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Gauge, List, ListItem, Padding, Paragraph, Wrap},
 };
+use ratatui_image::{Image as TerminalImage, Resize, picker::Picker, protocol::Protocol};
 use riff::{Playlist, platform, player};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const OAUTH_SCOPES: &[&str] = &[
@@ -34,12 +45,24 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
+const WIDE_ART_SIZE: Size = Size::new(30, 15);
+const COMPACT_ART_SIZE: Size = Size::new(20, 10);
 
 #[derive(Debug, Clone)]
 struct QueueItem {
-    label: String,
+    title: String,
+    artist: String,
+    album: String,
+    version: Option<String>,
     uri: String,
     duration_ms: u32,
+    cover_id: Option<String>,
+}
+
+impl QueueItem {
+    fn label(&self) -> String {
+        format!("{} - {}", self.artist, self.title)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,9 +82,23 @@ impl PlaybackStatus {
             Self::Stopped => "stopped",
         }
     }
+
+    fn glyph(self) -> &'static str {
+        match self {
+            Self::Starting => "…",
+            Self::Playing => "▶",
+            Self::Paused => "Ⅱ",
+            Self::Stopped => "■",
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+struct RenderedArtwork {
+    uri: String,
+    wide: Protocol,
+    compact: Protocol,
+}
+
 struct AppState {
     playlist_name: String,
     queue: Vec<QueueItem>,
@@ -69,6 +106,8 @@ struct AppState {
     current_uri: Option<String>,
     position_ms: u32,
     message: String,
+    artwork: Option<RenderedArtwork>,
+    artwork_pending_uri: Option<String>,
 }
 
 impl AppState {
@@ -93,8 +132,18 @@ enum Control {
 #[derive(Debug)]
 enum PlayerUpdate {
     Status(PlaybackStatus),
-    Track { uri: String, position_ms: u32 },
-    Position { uri: String, position_ms: u32 },
+    Track {
+        uri: String,
+        position_ms: u32,
+    },
+    Position {
+        uri: String,
+        position_ms: u32,
+    },
+    Artwork {
+        uri: String,
+        image: Arc<DynamicImage>,
+    },
     Error(String),
 }
 
@@ -128,51 +177,67 @@ pub async fn run(playlist: Playlist) -> Result<(), String> {
 }
 
 async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String> {
-    let mut queue = Vec::with_capacity(playlist.tracks.len());
+    let (session_config, cache, credentials) = session_parts()?;
+    let session = Session::new(session_config, Some(cache));
+    session
+        .connect(credentials, false)
+        .await
+        .map_err(|err| format!("could not connect to Spotify for TUI metadata: {err}"))?;
 
-    for (index, track) in playlist.tracks.iter().enumerate() {
+    let mut queue = Vec::with_capacity(playlist.tracks.len());
+    for (index, request) in playlist.tracks.iter().enumerate() {
         println!(
             "  [{}/{}] {}",
             index + 1,
             playlist.tracks.len(),
-            track.label
+            request.label
         );
 
-        let candidate = if let Some(uri) = track.id.as_deref() {
-            player::inspect_track(uri).await?
+        let uri = if let Some(uri) = request.id.as_deref() {
+            uri.to_string()
         } else {
-            player::search(&track.label, 1)
+            player::search(&request.label, 1)
                 .await?
                 .into_iter()
                 .next()
-                .ok_or_else(|| format!("no confident Spotify track found for `{}`", track.label))?
+                .ok_or_else(|| format!("no confident Spotify track found for `{}`", request.label))?
+                .uri
         };
 
-        let duration_ms = candidate
-            .metadata
-            .get("duration")
-            .and_then(|value| parse_duration_ms(value))
-            .unwrap_or(0);
+        let spotify_uri = SpotifyUri::from_uri(&uri)
+            .map_err(|err| format!("Spotify returned an invalid track URI `{uri}`: {err}"))?;
+        let track = SpotifyTrack::get(&session, &spotify_uri)
+            .await
+            .map_err(|err| format!("could not load TUI metadata for `{uri}`: {err}"))?;
 
-        println!("       -> {}", candidate.display_name());
-        queue.push(QueueItem {
-            label: candidate.display_name(),
-            uri: candidate.uri,
-            duration_ms,
-        });
+        let artist = track
+            .artists
+            .iter()
+            .map(|artist| artist.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cover_id = track
+            .album
+            .covers
+            .iter()
+            .max_by_key(|cover| cover.width.saturating_mul(cover.height))
+            .map(|cover| cover.id.to_string());
+        let version = (!track.version_title.trim().is_empty()).then(|| track.version_title.clone());
+        let item = QueueItem {
+            title: track.name.clone(),
+            artist,
+            album: track.album.name.clone(),
+            version,
+            uri,
+            duration_ms: track.duration.max(0) as u32,
+            cover_id,
+        };
+        println!("       -> {}", item.label());
+        queue.push(item);
     }
 
+    session.shutdown();
     Ok(queue)
-}
-
-fn parse_duration_ms(value: &str) -> Option<u32> {
-    let mut parts = value.split(':');
-    let minutes = parts.next()?.parse::<u32>().ok()?;
-    let seconds = parts.next()?.parse::<u32>().ok()?;
-    if parts.next().is_some() || seconds >= 60 {
-        return None;
-    }
-    Some((minutes * 60 + seconds) * 1000)
 }
 
 async fn run_player(
@@ -231,6 +296,9 @@ async fn run_player(
         .map_err(|err| format!("could not start playlist playback: {err}"))?;
     let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Starting));
 
+    let artwork_cache = Arc::new(Mutex::new(HashMap::<String, Arc<DynamicImage>>::new()));
+    let artwork_pending = Arc::new(Mutex::new(HashSet::<String>::new()));
+
     tokio::pin!(spirc_task);
     loop {
         tokio::select! {
@@ -254,18 +322,36 @@ async fn run_player(
                 };
                 match event {
                     PlayerEvent::Playing { track_id, position_ms, .. } => {
+                        let uri = track_id.to_string();
                         let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Playing));
                         let _ = updates.send(PlayerUpdate::Track {
-                            uri: track_id.to_string(),
+                            uri: uri.clone(),
                             position_ms,
                         });
+                        request_artwork(
+                            session.clone(),
+                            &queue,
+                            uri,
+                            updates.clone(),
+                            artwork_cache.clone(),
+                            artwork_pending.clone(),
+                        );
                     }
                     PlayerEvent::Paused { track_id, position_ms, .. } => {
+                        let uri = track_id.to_string();
                         let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Paused));
                         let _ = updates.send(PlayerUpdate::Track {
-                            uri: track_id.to_string(),
+                            uri: uri.clone(),
                             position_ms,
                         });
+                        request_artwork(
+                            session.clone(),
+                            &queue,
+                            uri,
+                            updates.clone(),
+                            artwork_cache.clone(),
+                            artwork_pending.clone(),
+                        );
                     }
                     PlayerEvent::PositionChanged { track_id, position_ms, .. }
                     | PlayerEvent::PositionCorrection { track_id, position_ms, .. }
@@ -289,6 +375,59 @@ async fn run_player(
     }
 }
 
+fn request_artwork(
+    session: Session,
+    queue: &[QueueItem],
+    uri: String,
+    updates: mpsc::UnboundedSender<PlayerUpdate>,
+    cache: Arc<Mutex<HashMap<String, Arc<DynamicImage>>>>,
+    pending: Arc<Mutex<HashSet<String>>>,
+) {
+    let Some(cover_id) = queue
+        .iter()
+        .find(|item| item.uri == uri)
+        .and_then(|item| item.cover_id.clone())
+    else {
+        return;
+    };
+
+    tokio::spawn(async move {
+        if let Some(image) = cache.lock().await.get(&cover_id).cloned() {
+            let _ = updates.send(PlayerUpdate::Artwork { uri, image });
+            return;
+        }
+
+        {
+            let mut pending = pending.lock().await;
+            if !pending.insert(cover_id.clone()) {
+                return;
+            }
+        }
+
+        let loaded = async {
+            let file_id = file_id_from_hex(&cover_id)?;
+            let bytes = session
+                .spclient()
+                .get_image(&file_id)
+                .await
+                .map_err(|err| format!("could not download album artwork: {err}"))?;
+            let bytes = bytes.to_vec();
+            tokio::task::spawn_blocking(move || image::load_from_memory(&bytes))
+                .await
+                .map_err(|err| format!("album artwork decoder task failed: {err}"))?
+                .map(Arc::new)
+                .map_err(|err| format!("could not decode album artwork: {err}"))
+        }
+        .await;
+
+        pending.lock().await.remove(&cover_id);
+        if let Ok(image) = loaded {
+            cache.lock().await.insert(cover_id, image.clone());
+            let _ = updates.send(PlayerUpdate::Artwork { uri, image });
+        }
+    });
+}
+
 async fn run_terminal(
     playlist_name: String,
     queue: Vec<QueueItem>,
@@ -300,6 +439,7 @@ async fn run_terminal(
     execute!(stdout, EnterAlternateScreen)
         .map_err(|err| format!("could not enter alternate screen: {err}"))?;
 
+    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
         Terminal::new(backend).map_err(|err| format!("could not initialize terminal UI: {err}"))?;
@@ -307,6 +447,7 @@ async fn run_terminal(
         .clear()
         .map_err(|err| format!("could not clear terminal: {err}"))?;
 
+    let (rendered_art_tx, mut rendered_art_rx) = mpsc::unbounded_channel::<RenderedArtwork>();
     let mut state = AppState {
         playlist_name,
         queue,
@@ -314,12 +455,20 @@ async fn run_terminal(
         current_uri: None,
         position_ms: 0,
         message: "Connecting to Spotify...".to_string(),
+        artwork: None,
+        artwork_pending_uri: None,
     };
 
     let loop_result = async {
         loop {
             while let Ok(update) = updates.try_recv() {
-                apply_update(&mut state, update)?;
+                apply_update(&mut state, update, &picker, rendered_art_tx.clone())?;
+            }
+            while let Ok(artwork) = rendered_art_rx.try_recv() {
+                if state.current_uri.as_deref() == Some(artwork.uri.as_str()) {
+                    state.artwork_pending_uri = None;
+                    state.artwork = Some(artwork);
+                }
             }
 
             terminal
@@ -342,10 +491,10 @@ async fn run_terminal(
                     KeyCode::Char(' ') => {
                         let _ = controls.send(Control::Toggle);
                     }
-                    KeyCode::Char('n') | KeyCode::Right => {
+                    KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right => {
                         let _ = controls.send(Control::Next);
                     }
-                    KeyCode::Char('p') | KeyCode::Left => {
+                    KeyCode::Char('p') | KeyCode::Char('h') | KeyCode::Left => {
                         let _ = controls.send(Control::Previous);
                     }
                     _ => {}
@@ -362,22 +511,54 @@ async fn run_terminal(
     loop_result.and(restore_result)
 }
 
-fn apply_update(state: &mut AppState, update: PlayerUpdate) -> Result<(), String> {
+fn apply_update(
+    state: &mut AppState,
+    update: PlayerUpdate,
+    picker: &Picker,
+    rendered_art_tx: mpsc::UnboundedSender<RenderedArtwork>,
+) -> Result<(), String> {
     match update {
         PlayerUpdate::Status(status) => {
             state.status = status;
             state.message = match status {
                 PlaybackStatus::Starting => "Starting playback...".to_string(),
-                PlaybackStatus::Playing => "Space pause  n next  p previous  q quit".to_string(),
+                PlaybackStatus::Playing => {
+                    "space pause  h/← previous  l/→ next  q quit".to_string()
+                }
                 PlaybackStatus::Paused => {
-                    "Paused. Space resume  n next  p previous  q quit".to_string()
+                    "paused · space resume  h/← previous  l/→ next  q quit".to_string()
                 }
                 PlaybackStatus::Stopped => "Playback stopped".to_string(),
             };
         }
-        PlayerUpdate::Track { uri, position_ms } | PlayerUpdate::Position { uri, position_ms } => {
+        PlayerUpdate::Track { uri, position_ms } => {
+            if state.current_uri.as_deref() != Some(uri.as_str()) {
+                state.artwork = None;
+                state.artwork_pending_uri = None;
+            }
             state.current_uri = Some(uri);
             state.position_ms = position_ms;
+        }
+        PlayerUpdate::Position { uri, position_ms } => {
+            state.current_uri = Some(uri);
+            state.position_ms = position_ms;
+        }
+        PlayerUpdate::Artwork { uri, image } => {
+            if state.current_uri.as_deref() != Some(uri.as_str())
+                || state.artwork_pending_uri.as_deref() == Some(uri.as_str())
+            {
+                return Ok(());
+            }
+            state.artwork_pending_uri = Some(uri.clone());
+            let picker = picker.clone();
+            tokio::task::spawn_blocking(move || {
+                let wide = picker.new_protocol((*image).clone(), WIDE_ART_SIZE, Resize::Fit(None));
+                let compact =
+                    picker.new_protocol((*image).clone(), COMPACT_ART_SIZE, Resize::Fit(None));
+                if let (Ok(wide), Ok(compact)) = (wide, compact) {
+                    let _ = rendered_art_tx.send(RenderedArtwork { uri, wide, compact });
+                }
+            });
         }
         PlayerUpdate::Error(err) => return Err(err),
     }
@@ -398,70 +579,134 @@ fn draw(frame: &mut Frame<'_>, state: &AppState) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(2),
+            Constraint::Min(12),
             Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(3),
-        ])
-        .split(area);
-
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(" RIFF ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(format!("  {}", state.playlist_name)),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(title, outer[0]);
-
-    if area.width >= 82 {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(outer[1]);
-        draw_now_playing(frame, columns[0], state);
-        draw_queue(frame, columns[1], state);
-    } else {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(8), Constraint::Min(5)])
-            .split(outer[1]);
-        draw_now_playing(frame, rows[0], state);
-        draw_queue(frame, rows[1], state);
-    }
-
-    let footer = Paragraph::new(state.message.as_str())
-        .block(Block::default().borders(Borders::ALL).title(" controls "));
-    frame.render_widget(footer, outer[2]);
-}
-
-fn draw_now_playing(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Length(queue_height(area)),
             Constraint::Length(2),
         ])
         .split(area);
 
-    let current = state
-        .current()
-        .map(|item| item.label.as_str())
-        .unwrap_or("Waiting for playback...");
-    let now = Paragraph::new(vec![
+    draw_header(frame, outer[0], state);
+    draw_player(frame, outer[1], state);
+    draw_progress(frame, outer[2], state);
+    draw_queue(frame, outer[3], state);
+    draw_footer(frame, outer[4], state);
+}
+
+fn queue_height(area: Rect) -> u16 {
+    if area.height >= 34 {
+        9
+    } else if area.height >= 26 {
+        6
+    } else {
+        4
+    }
+}
+
+fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let line = Line::from(vec![
+        Span::styled(" RIFF ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::raw(&state.playlist_name),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_player(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if area.width >= 82 && area.height >= 14 {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(34), Constraint::Min(32)])
+            .split(area);
+        draw_artwork(frame, columns[0], state, false);
+        draw_metadata(frame, columns[1], state);
+    } else if area.height >= 20 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(12), Constraint::Min(7)])
+            .split(area);
+        draw_artwork(frame, rows[0], state, true);
+        draw_metadata(frame, rows[1], state);
+    } else {
+        draw_metadata(frame, area, state);
+    }
+}
+
+fn draw_artwork(frame: &mut Frame<'_>, area: Rect, state: &AppState, compact: bool) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" album ")
+        .padding(Padding::uniform(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(artwork) = state.artwork.as_ref() else {
+        let placeholder = if state.artwork_pending_uri.is_some() {
+            "loading artwork…"
+        } else {
+            "▞▚\n▚▞\n\nalbum artwork"
+        };
+        frame.render_widget(
+            Paragraph::new(placeholder)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    };
+
+    let protocol = if compact {
+        &artwork.compact
+    } else {
+        &artwork.wide
+    };
+    frame.render_widget(TerminalImage::new(protocol).allow_clipping(true), inner);
+}
+
+fn draw_metadata(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" now playing ")
+        .padding(Padding::new(2, 2, 1, 1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(current) = state.current() else {
+        frame.render_widget(
+            Paragraph::new("Waiting for Spotify playback…").alignment(Alignment::Center),
+            inner,
+        );
+        return;
+    };
+
+    let mut lines = vec![
         Line::from(Span::styled(
-            state.status.label().to_uppercase(),
+            format!(
+                "{}  {}",
+                state.status.glyph(),
+                state.status.label().to_uppercase()
+            ),
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(current),
-    ])
-    .wrap(Wrap { trim: true })
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" now playing "),
-    );
-    frame.render_widget(now, rows[0]);
+        Line::from(Span::styled(
+            current.title.as_str(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(current.artist.as_str()),
+        Line::from(""),
+        Line::from(format!("album  {}", current.album)),
+    ];
+    if let Some(version) = current.version.as_deref() {
+        lines.push(Line::from(format!("version  {version}")));
+    }
+    lines.push(Line::from(format!("track  {}", current.uri)));
 
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn draw_progress(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let duration_ms = state.current().map(|item| item.duration_ms).unwrap_or(0);
     let ratio = if duration_ms == 0 {
         0.0
@@ -472,19 +717,18 @@ fn draw_now_playing(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         format_duration(state.position_ms)
     } else {
         format!(
-            "{} / {}",
+            "{}  /  {}",
             format_duration(state.position_ms),
             format_duration(duration_ms)
         )
     };
-    let progress = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(" progress "))
-        .ratio(ratio)
-        .label(label);
-    frame.render_widget(progress, rows[1]);
-
-    let hint = Paragraph::new("Space play/pause   ←/p previous   →/n next   q quit");
-    frame.render_widget(hint, rows[2]);
+    frame.render_widget(
+        Gauge::default()
+            .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
+            .ratio(ratio)
+            .label(label),
+        area,
+    );
 }
 
 fn draw_queue(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -495,7 +739,7 @@ fn draw_queue(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .enumerate()
         .map(|(index, item)| {
             let prefix = if Some(index) == current { "▶" } else { " " };
-            let text = format!("{prefix} {:>2}. {}", index + 1, item.label);
+            let text = format!("{prefix} {:>2}. {}", index + 1, item.label());
             let style = if Some(index) == current {
                 Style::default().add_modifier(Modifier::BOLD)
             } else {
@@ -505,17 +749,39 @@ fn draw_queue(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         })
         .collect::<Vec<_>>();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" queue · {} tracks ", state.queue.len())),
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .title(format!(" queue · {} tracks ", state.queue.len())),
+        ),
+        area,
     );
-    frame.render_widget(list, area);
+}
+
+fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    frame.render_widget(
+        Paragraph::new(format!(" {} ", state.message)).alignment(Alignment::Center),
+        area,
+    );
 }
 
 fn format_duration(duration_ms: u32) -> String {
     let total_seconds = duration_ms / 1000;
     format!("{}:{:02}", total_seconds / 60, total_seconds % 60)
+}
+
+fn file_id_from_hex(value: &str) -> Result<FileId, String> {
+    if value.len() != 40 || !value.is_ascii() {
+        return Err("invalid Spotify artwork id".to_string());
+    }
+    let mut bytes = [0u8; 20];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        let start = index * 2;
+        *byte = u8::from_str_radix(&value[start..start + 2], 16)
+            .map_err(|_| "invalid Spotify artwork id".to_string())?;
+    }
+    Ok(FileId::from_raw(&bytes))
 }
 
 fn session_parts() -> Result<(SessionConfig, Cache, Credentials), String> {
@@ -562,13 +828,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_duration() {
-        assert_eq!(parse_duration_ms("7:55"), Some(475_000));
-        assert_eq!(parse_duration_ms("7:99"), None);
+    fn formats_duration_for_ui() {
+        assert_eq!(format_duration(475_000), "7:55");
     }
 
     #[test]
-    fn formats_duration_for_ui() {
-        assert_eq!(format_duration(475_000), "7:55");
+    fn parses_spotify_image_file_id() {
+        let id = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(file_id_from_hex(id).unwrap().to_string(), id);
+    }
+
+    #[test]
+    fn rejects_invalid_spotify_image_file_id() {
+        assert!(file_id_from_hex("xyz").is_err());
     }
 }
