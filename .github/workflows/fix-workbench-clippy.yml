@@ -1,0 +1,91 @@
+name: Fix Workbench Clippy
+
+on:
+  push:
+    branches: [feat/workbench-v2-shell]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/workbench-v2-shell
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply focused fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          mod = Path('src/workbench/mod.rs')
+          text = mod.read_text()
+          text = text.replace('    path::{Path, PathBuf},\n', '    path::PathBuf,\n')
+          text = text.replace('use riff::{Playlist, Track};\n', 'use riff::Playlist;\n')
+          start = text.index('\npub fn create_playlist(')
+          end = text.index('\n#[cfg(test)]', start)
+          text = text[:start] + text[end:]
+          old = '''            } else if workbench.state.view == View::Search {
+                if let Some((index, _)) = workbench
+                    .state
+                    .hits
+                    .search_rows
+                    .iter()
+                    .find(|(_, rect)| contains(*rect, point))
+                {
+                    workbench.state.search.selected = *index;
+                    request_selected_search_artwork(workbench, controls);
+                }
+            }
+'''
+          new = '''            } else if workbench.state.view == View::Search
+                && let Some((index, _)) = workbench
+                    .state
+                    .hits
+                    .search_rows
+                    .iter()
+                    .find(|(_, rect)| contains(*rect, point))
+            {
+                workbench.state.search.selected = *index;
+                request_selected_search_artwork(workbench, controls);
+            }
+'''
+          if old not in text:
+              raise SystemExit('mouse-search block not found')
+          mod.write_text(text.replace(old, new))
+
+          player = Path('src/workbench/player_task.rs')
+          text = player.read_text()
+          anchor = 'use super::model::{LyricsLine, PlaybackStatus, QueueItem};\n'
+          alias = anchor + '\ntype LyricsCache = Arc<Mutex<HashMap<String, (String, Vec<LyricsLine>)>>>;\n'
+          if 'type LyricsCache =' not in text:
+              text = text.replace(anchor, alias)
+          text = text.replace(
+              '    cache: Arc<Mutex<HashMap<String, (String, Vec<LyricsLine>)>>>,\n',
+              '    cache: LyricsCache,\n',
+          )
+          player.write_text(text)
+          PY
+
+      - name: Install Rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/workbench/mod.rs src/workbench/player_task.rs
+          git commit -m "refactor: satisfy Workbench clippy"
+          git push origin HEAD:feat/workbench-v2-shell
