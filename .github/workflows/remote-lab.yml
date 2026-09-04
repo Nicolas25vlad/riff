@@ -1,0 +1,87 @@
+name: Remote Lab
+
+on:
+  push:
+    branches:
+      - 'feat/**'
+      - 'fix/**'
+      - 'chore/**'
+  workflow_dispatch:
+
+concurrency:
+  group: remote-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }} remote build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            artifact: riff-linux-x86_64
+            binary: target/release/riff
+          - name: Windows
+            os: windows-latest
+            artifact: riff-windows-x86_64
+            binary: target/release/riff.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release --all-features
+
+      - name: Linux smoke test
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ./target/release/riff --version
+          ./target/release/riff validate examples/coding-metal.riff
+          ./target/release/riff inspect examples/coding-metal.riff > /tmp/riff-inspect.txt
+          test -s /tmp/riff-inspect.txt
+
+      - name: Windows smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\target\release\riff.exe --version
+          .\target\release\riff.exe validate examples\coding-metal.riff
+          .\target\release\riff.exe inspect examples\coding-metal.riff | Out-File -FilePath riff-inspect.txt
+          if (-not (Test-Path riff-inspect.txt) -or (Get-Item riff-inspect.txt).Length -eq 0) { throw 'inspect smoke test produced no output' }
+
+      - name: Upload testable binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ github.sha }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build summary
+        if: always()
+        shell: bash
+        run: |
+          echo '## Remote Lab: ${{ matrix.name }}' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Branch: `${{ github.ref_name }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Commit: `${{ github.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Artifact: `${{ matrix.artifact }}-${{ github.sha }}`' >> "$GITHUB_STEP_SUMMARY"
