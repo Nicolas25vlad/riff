@@ -6,7 +6,6 @@ on:
       - 'Cargo.toml'
       - '.github/workflows/package-check.yml'
       - '.github/workflows/publish-packages.yml'
-      - '.github/workflows/publish-crates-bootstrap.yml'
       - 'RELEASING.md'
   workflow_dispatch:
 
