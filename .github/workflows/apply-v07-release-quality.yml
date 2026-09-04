@@ -17,154 +17,74 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feat/v0.7-core-polish
-      - name: Apply reproducibility and TUI render tests
+      - name: Apply non-workflow release quality changes
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+          def replace(path, old, new):
+              p=Path(path); s=p.read_text()
+              if old not in s: raise SystemExit(f'missing pattern in {path}')
+              p.write_text(s.replace(old,new,1))
+          replace('install.sh','cargo install --git "$REPO" --force','cargo install --git "$REPO" --locked --force')
+          replace('install.ps1','cargo install --git $Repo --force','cargo install --git $Repo --locked --force')
+          p=Path('src/workbench/mod.rs'); s=p.read_text()
+          marker='''    #[test]\n    fn formats_transport_time() {\n'''
+          tests=r'''    fn test_workbench() -> Workbench {
+        let item = QueueItem {
+            title: "War Pigs".into(), artist: "Black Sabbath".into(), album: "Paranoid".into(),
+            version: None, uri: "spotify:track:test".into(), duration_ms: 475_000,
+            cover_id: None, match_score: Some(100),
+        };
+        Workbench {
+            state: AppState {
+                file_path: PathBuf::from("coding-metal.riff"), file_name: "coding-metal.riff".into(),
+                playlist_name: "coding-metal".into(), queue: vec![item.clone()], transient_current: None,
+                status: PlaybackStatus::Playing, current_uri: Some(item.uri.clone()), position_ms: 42_000,
+                volume: volume_from_percent(65), shuffle: false, repeat: false, message: "ready".into(),
+                view: View::NowPlaying, theme: Theme::from_env(), git: None,
+                search: SearchState::default(), lyrics: LyricsState::default(), hits: HitMap::default(),
+            },
+            editor: EditorState {
+                lines: vec!["playlist \"coding-metal\" {".into(), "}".into()], row: 0, col: 0,
+                scroll: 0, dirty: false, clipboard: None, message: String::new(),
+            },
+            artwork: HashMap::new(), artwork_pending: HashMap::new(),
+        }
+    }
 
-          def replace(path, old, new, count=1):
-              p = Path(path)
-              s = p.read_text()
-              if old not in s:
-                  raise SystemExit(f'missing pattern in {path}: {old[:120]!r}')
-              p.write_text(s.replace(old, new, count))
+    fn render_virtual_terminal(width: u16, height: u16) -> Workbench {
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut workbench = test_workbench();
+        terminal.draw(|frame| draw(frame, &mut workbench)).unwrap();
+        workbench
+    }
 
-          replace('install.sh', 'cargo install --git "$REPO" --force', 'cargo install --git "$REPO" --locked --force')
-          replace('install.ps1', 'cargo install --git $Repo --force', 'cargo install --git $Repo --locked --force')
+    #[test]
+    fn renders_wide_layout_in_virtual_terminal() {
+        let workbench = render_virtual_terminal(120, 35);
+        assert_eq!(workbench.state.hits.tabs.len(), View::ALL.len());
+        assert!(workbench.state.hits.volume.is_some());
+        assert!(workbench.state.hits.progress.is_some());
+    }
 
-          p = Path('.github/workflows/ci.yml')
-          s = p.read_text()
-          replacements = {
-              'cargo clippy --all-targets --all-features -- -D warnings': 'cargo clippy --locked --all-targets --all-features -- -D warnings',
-              'cargo test --all-features --no-fail-fast': 'cargo test --locked --all-features --no-fail-fast',
-              'cargo check --all-targets --all-features': 'cargo check --locked --all-targets --all-features',
-              'cargo build --all-features': 'cargo build --locked --all-features',
-          }
-          for old, new in replacements.items():
-              if old not in s:
-                  raise SystemExit(f'missing CI pattern {old!r}')
-              s = s.replace(old, new)
-          needle = '''      - name: Check formatting
-                  run: cargo fmt --all -- --check
-          '''
-          lock_check = '''      - name: Verify Cargo.lock
-                  run: cargo metadata --locked --format-version 1 > /dev/null
+    #[test]
+    fn renders_compact_layout_in_virtual_terminal() {
+        let workbench = render_virtual_terminal(60, 20);
+        let bounds = Rect::new(0, 0, 60, 20);
+        for (_, tab) in &workbench.state.hits.tabs {
+            assert!(tab.right() <= bounds.right());
+            assert!(tab.bottom() <= bounds.bottom());
+        }
+        assert!(workbench.state.hits.progress.is_some());
+    }
 
-          ''' + needle
-          if needle not in s:
-              raise SystemExit('missing Linux formatting step')
-          s = s.replace(needle, lock_check, 1)
-          win_needle = '''      - name: Check formatting
-                  run: cargo fmt --all -- --check
-          '''
-          idx = s.find(win_needle, s.find('name: Windows 11 compatible build'))
-          if idx < 0:
-              raise SystemExit('missing Windows formatting step')
-          win_lock = '''      - name: Verify Cargo.lock
-                  run: cargo metadata --locked --format-version 1 | Out-Null
-                  shell: pwsh
-
-          '''
-          s = s[:idx] + win_lock + s[idx:]
-          p.write_text(s)
-
-          p = Path('.github/workflows/package-check.yml')
-          s = p.read_text().replace('cargo publish --dry-run', 'cargo publish --locked --dry-run')
-          p.write_text(s)
-          p = Path('.github/workflows/publish-packages.yml')
-          s = p.read_text().replace('cargo publish --dry-run', 'cargo publish --locked --dry-run')
-          s = s.replace('run: cargo publish\n', 'run: cargo publish --locked\n')
-          p.write_text(s)
-
-          p = Path('.github/workflows/remote-lab.yml')
-          p.write_text(p.read_text().replace('cargo build --release', 'cargo build --locked --release'))
-
-          p = Path('src/workbench/mod.rs')
-          s = p.read_text()
-          marker = '''    #[test]
-              fn formats_transport_time() {
-          '''
-          tests = r'''    fn test_workbench() -> Workbench {
-                  let item = QueueItem {
-                      title: "War Pigs".into(),
-                      artist: "Black Sabbath".into(),
-                      album: "Paranoid".into(),
-                      version: None,
-                      uri: "spotify:track:test".into(),
-                      duration_ms: 475_000,
-                      cover_id: None,
-                      match_score: Some(100),
-                  };
-                  Workbench {
-                      state: AppState {
-                          file_path: PathBuf::from("coding-metal.riff"),
-                          file_name: "coding-metal.riff".into(),
-                          playlist_name: "coding-metal".into(),
-                          queue: vec![item.clone()],
-                          transient_current: None,
-                          status: PlaybackStatus::Playing,
-                          current_uri: Some(item.uri.clone()),
-                          position_ms: 42_000,
-                          volume: volume_from_percent(65),
-                          shuffle: false,
-                          repeat: false,
-                          message: "ready".into(),
-                          view: View::NowPlaying,
-                          theme: Theme::from_env(),
-                          git: None,
-                          search: SearchState::default(),
-                          lyrics: LyricsState::default(),
-                          hits: HitMap::default(),
-                      },
-                      editor: EditorState {
-                          lines: vec!["playlist \"coding-metal\" {".into(), "}".into()],
-                          row: 0,
-                          col: 0,
-                          scroll: 0,
-                          dirty: false,
-                          clipboard: None,
-                          message: String::new(),
-                      },
-                      artwork: HashMap::new(),
-                      artwork_pending: HashMap::new(),
-                  }
-              }
-
-              fn render_virtual_terminal(width: u16, height: u16) -> Workbench {
-                  use ratatui::backend::TestBackend;
-                  let backend = TestBackend::new(width, height);
-                  let mut terminal = Terminal::new(backend).unwrap();
-                  let mut workbench = test_workbench();
-                  terminal.draw(|frame| draw(frame, &mut workbench)).unwrap();
-                  workbench
-              }
-
-              #[test]
-              fn renders_wide_layout_in_virtual_terminal() {
-                  let workbench = render_virtual_terminal(120, 35);
-                  assert_eq!(workbench.state.hits.tabs.len(), View::ALL.len());
-                  assert!(workbench.state.hits.volume.is_some());
-                  assert!(workbench.state.hits.progress.is_some());
-              }
-
-              #[test]
-              fn renders_compact_layout_in_virtual_terminal() {
-                  let workbench = render_virtual_terminal(60, 20);
-                  let bounds = Rect::new(0, 0, 60, 20);
-                  for (_, tab) in &workbench.state.hits.tabs {
-                      assert!(tab.right() <= bounds.right());
-                      assert!(tab.bottom() <= bounds.bottom());
-                  }
-                  assert!(workbench.state.hits.progress.is_some());
-              }
-
-          ''' + marker
-          if marker not in s:
-              raise SystemExit('missing Workbench test marker')
-          p.write_text(s.replace(marker, tests, 1))
-
-          replace('scripts/check-tui-quality.sh', "echo 'TUI quality invariants passed.'", "echo 'TUI terminal ownership, input and virtual-render invariants passed.'")
+''' + marker
+          if marker not in s: raise SystemExit('missing Workbench test marker')
+          p.write_text(s.replace(marker,tests,1))
+          replace('scripts/check-tui-quality.sh',"echo 'TUI quality invariants passed.'","echo 'TUI terminal ownership, input and virtual-render invariants passed.'")
           PY
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
@@ -173,22 +93,18 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --all
-      - name: Locked metadata
-        run: cargo metadata --locked --format-version 1 > /dev/null
-      - name: Clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test --locked --all-targets --all-features
-      - name: TUI quality
-        run: bash scripts/check-tui-quality.sh
-      - name: Package dry run
-        run: cargo publish --locked --dry-run --allow-dirty
-      - name: Commit patch and remove bootstrap workflow
+      - name: Validate
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets --all-features
+          bash scripts/check-tui-quality.sh
+          cargo publish --locked --dry-run --allow-dirty
+      - name: Commit source changes
         shell: bash
         run: |
-          rm .github/workflows/apply-v07-release-quality.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'build: lock dependencies and test TUI rendering'
+          git add install.sh install.ps1 src/workbench/mod.rs scripts/check-tui-quality.sh
+          git commit -m 'build: test TUI rendering and lock installers'
           git push origin HEAD:feat/v0.7-core-polish
