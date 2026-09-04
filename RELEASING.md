@@ -1,14 +1,14 @@
 # Releasing Riff
 
-GitHub Releases are the source of truth for package publication.
+Riff releases are tag-driven.
 
-A published, non-prerelease GitHub Release with a tag such as `v0.7.0` triggers `.github/workflows/publish-packages.yml`, which publishes the matching version to crates.io.
+A tag such as `v0.7.0` triggers `.github/workflows/release.yml`, which validates the version, builds Linux and Windows binaries, packages checksums and creates the GitHub Release. Publishing that GitHub Release then triggers `.github/workflows/publish-packages.yml`, which publishes the matching `riff-music` version to crates.io.
 
 ## Current package targets
 
 ### crates.io
 
-Active. The first public Cargo release, `riff-music` 0.6.0, was published successfully on September 4, 2026.
+Active.
 
 The application is called **Riff** and the installed executable is still `riff`, but the crates.io package is named `riff-music` because the `riff` package name is already owned by an unrelated crate.
 
@@ -17,46 +17,66 @@ cargo install riff-music
 riff --version
 ```
 
+Upgrade with:
+
+```bash
+cargo install riff-music --force
+```
+
 ### AUR
 
-Temporarily paused because new AUR account creation is currently unavailable. The `packaging/aur/PKGBUILD.template` is intentionally kept in the repository so AUR publishing can be re-enabled later, but no active CI or release workflow currently publishes to AUR.
+Temporarily paused because new AUR account creation is currently unavailable. The `packaging/aur/PKGBUILD.template` remains in the repository so AUR publishing can be re-enabled later, but no active CI or release workflow currently publishes to AUR.
 
 ## One-time crates.io setup
 
-1. Sign in to crates.io with the GitHub account that owns the `riff-music` crate.
-2. Verify the crates.io account email.
-3. Create an API token with permission to publish/update the crate.
-4. In this GitHub repository, create an Actions secret named:
+The repository needs the Actions secret:
 
 ```text
 CARGO_REGISTRY_TOKEN
 ```
 
-Never commit this token to the repository.
+The token must belong to a verified crates.io account with permission to publish `riff-music`. Never commit it to the repository.
 
 ## Release checklist
 
 1. Make sure `main` is green.
 2. Update the version in `Cargo.toml` using SemVer.
-3. Merge the version/release changes through a PR.
-4. Create a Git tag matching the manifest exactly:
+3. Add the matching section to `CHANGELOG.md`.
+4. Merge the release-preparation PR.
+5. Create and push a Git tag matching the manifest exactly:
 
 ```text
 Cargo.toml version = 0.7.0
 Git tag            = v0.7.0
 ```
 
-5. Create and **publish** a GitHub Release for that tag.
-6. Watch the `Publish Packages` workflow.
-7. Verify the new version on crates.io.
+That tag is the only manual release trigger.
 
-The workflow deliberately aborts if the release tag does not equal `v${Cargo.toml version}`.
+The `Release` workflow then:
+
+- rejects tags that do not match `Cargo.toml`;
+- builds optimized binaries on Linux and Windows;
+- packages `.tar.gz` / `.zip` archives and SHA-256 checksum files;
+- creates the GitHub Release using the matching `CHANGELOG.md` section.
+
+The resulting GitHub Release triggers `Publish Packages`, which performs a final `cargo publish --dry-run` before publishing to crates.io.
 
 ## What CI validates before release
 
-`Package Check` runs on packaging-related pull requests and validates `cargo publish --dry-run` on Linux.
+`Package Check` validates `cargo publish --dry-run` on packaging-related pull requests.
 
-The normal Riff CI still owns Rust formatting, Clippy, tests, cross-platform checks and CLI smoke tests.
+Normal CI owns formatting, Clippy, unit tests, cross-platform checks, CLI smoke tests, the TUI quality gate and the release-workflow contract check.
+
+Remote Lab builds testable Linux and Windows release binaries for feature/fix branches.
+
+## Versioning
+
+While Riff remains in `0.x`:
+
+- patch releases cover fixes, compatible polish, documentation and release engineering;
+- minor releases cover meaningful new user-facing capabilities or larger Workbench/runtime changes.
+
+Never move an already published release tag. If a release needs a correction, bump the version.
 
 ## Dormant AUR packaging
 

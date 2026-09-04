@@ -23,7 +23,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate shell helpers
-        run: bash -n install.sh scripts/deps.sh scripts/check-tui-quality.sh
+        run: bash -n install.sh scripts/deps.sh scripts/check-tui-quality.sh scripts/check-release-workflow.sh
+
+      - name: Validate release workflow contract
+        run: bash scripts/check-release-workflow.sh
 
       - name: Install Linux audio dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
@@ -68,7 +71,7 @@ jobs:
             echo
             echo '- Commit: `${{ github.sha }}`'
             echo '- Rust: `stable`'
-            echo '- Checks: fmt, clippy, tests, cargo check, CLI smoke test'
+            echo '- Checks: release contract, fmt, clippy, tests, cargo check, CLI smoke test'
           } >> "$GITHUB_STEP_SUMMARY"
 
   tui-quality:
