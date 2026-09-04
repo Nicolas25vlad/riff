@@ -2,6 +2,15 @@
 
 All notable user-facing changes to Riff are documented here.
 
+## 0.6.2
+
+### Changed
+
+- refreshed README and installation docs around the current Workbench and crates.io package;
+- exposed the primary `riff tui <file>` command in `riff help`;
+- added a regression test so the Workbench command cannot silently disappear from CLI help;
+- added this project changelog as the release-history source of truth.
+
 ## 0.6.1
 
 ### Fixed
