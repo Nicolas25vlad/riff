@@ -1,0 +1,89 @@
+name: Apply TUI Mouse Polish
+
+on:
+  push:
+    branches: [fix/tui-hardening-polish]
+    paths:
+      - '.github/workflows/apply-tui-mouse-polish.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tui-hardening-polish
+          fetch-depth: 0
+
+      - name: Make wheel actions contextual
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/workbench/mod.rs')
+          text = path.read_text()
+          old = '''        MouseEventKind::ScrollUp => {
+              if workbench.state.view == View::Search {
+                  workbench.state.search.move_up();
+                  request_selected_search_artwork(workbench, controls);
+              } else {
+                  let _ = controls.send(Control::VolumeUp);
+              }
+          }
+          MouseEventKind::ScrollDown => {
+              if workbench.state.view == View::Search {
+                  workbench.state.search.move_down();
+                  request_selected_search_artwork(workbench, controls);
+              } else {
+                  let _ = controls.send(Control::VolumeDown);
+              }
+          }
+          '''
+          new = '''        MouseEventKind::ScrollUp => {
+              if workbench.state.view == View::Search {
+                  workbench.state.search.move_up();
+                  request_selected_search_artwork(workbench, controls);
+              } else if workbench
+                  .state
+                  .hits
+                  .volume
+                  .is_some_and(|rect| contains(rect, point))
+              {
+                  let _ = controls.send(Control::VolumeUp);
+              }
+          }
+          MouseEventKind::ScrollDown => {
+              if workbench.state.view == View::Search {
+                  workbench.state.search.move_down();
+                  request_selected_search_artwork(workbench, controls);
+              } else if workbench
+                  .state
+                  .hits
+                  .volume
+                  .is_some_and(|rect| contains(rect, point))
+              {
+                  let _ = controls.send(Control::VolumeDown);
+              }
+          }
+          '''
+          if old not in text:
+              raise SystemExit('expected mouse scroll block not found')
+          path.write_text(text.replace(old, new, 1))
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/apply-tui-mouse-polish.yml
+
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix(tui): make mouse wheel controls contextual'
+          git push origin HEAD:fix/tui-hardening-polish
