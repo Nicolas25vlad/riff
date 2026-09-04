@@ -37,7 +37,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Publishing Riff $version"
+          echo "Publishing Riff $version to crates.io"
 
   crates-io:
     name: Publish crates.io
@@ -64,6 +64,7 @@ jobs:
       - name: Require crates.io token
         shell: bash
         run: |
+          set -euo pipefail
           if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
             echo '::error::Missing repository secret CARGO_REGISTRY_TOKEN.'
             exit 1
@@ -74,80 +75,3 @@ jobs:
 
       - name: Publish crates.io
         run: cargo publish --token "$CARGO_REGISTRY_TOKEN"
-
-  aur:
-    name: Publish AUR
-    needs: validate-release
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
-    timeout-minutes: 20
-    env:
-      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-    steps:
-      - name: Install release tools
-        run: pacman -Syu --noconfirm git openssh curl
-
-      - name: Checkout release tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.release.tag_name }}
-
-      - name: Render AUR package
-        shell: bash
-        run: |
-          set -euo pipefail
-          version='${{ needs.validate-release.outputs.version }}'
-          archive_url="https://github.com/Nicolas25vlad/riff/archive/refs/tags/v${version}.tar.gz"
-          curl -fL "$archive_url" -o /tmp/riff-source.tar.gz
-          source_sha=$(sha256sum /tmp/riff-source.tar.gz | awk '{print $1}')
-          sed \
-            -e "s/@VERSION@/${version}/g" \
-            -e "s/@SHA256@/${source_sha}/g" \
-            packaging/aur/PKGBUILD.template > /tmp/PKGBUILD
-          bash -n /tmp/PKGBUILD
-          mkdir -p /tmp/aur-metadata
-          cp /tmp/PKGBUILD /tmp/aur-metadata/PKGBUILD
-          useradd -m builder
-          chown -R builder:builder /tmp/aur-metadata
-          runuser -u builder -- bash -lc 'cd /tmp/aur-metadata && makepkg --printsrcinfo > .SRCINFO'
-          test -s /tmp/aur-metadata/.SRCINFO
-
-      - name: Configure AUR SSH
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${AUR_SSH_PRIVATE_KEY:-}" ]]; then
-            echo '::error::Missing repository secret AUR_SSH_PRIVATE_KEY.'
-            exit 1
-          fi
-          mkdir -p /root/.ssh
-          chmod 700 /root/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > /root/.ssh/id_aur
-          chmod 600 /root/.ssh/id_aur
-          ssh-keyscan -H aur.archlinux.org >> /root/.ssh/known_hosts
-          cat > /root/.ssh/config <<'EOF'
-          Host aur.archlinux.org
-            User aur
-            IdentityFile /root/.ssh/id_aur
-            IdentitiesOnly yes
-          EOF
-          chmod 600 /root/.ssh/config
-
-      - name: Push package to AUR
-        shell: bash
-        run: |
-          set -euo pipefail
-          version='${{ needs.validate-release.outputs.version }}'
-          git clone ssh://aur@aur.archlinux.org/riff.git /tmp/aur-repo
-          cp /tmp/aur-metadata/PKGBUILD /tmp/aur-repo/PKGBUILD
-          cp /tmp/aur-metadata/.SRCINFO /tmp/aur-repo/.SRCINFO
-          cd /tmp/aur-repo
-          git config user.name 'Riff Release Bot'
-          git config user.email 'Nicolas25vlad@users.noreply.github.com'
-          git add PKGBUILD .SRCINFO
-          if git diff --cached --quiet; then
-            echo "AUR is already at Riff $version; nothing to publish."
-            exit 0
-          fi
-          git commit -m "riff ${version}"
-          git push origin HEAD:master
