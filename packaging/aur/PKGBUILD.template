@@ -1,0 +1,30 @@
+pkgname=riff
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='A terminal-first music player where playlists are code'
+arch=('x86_64')
+url='https://github.com/Nicolas25vlad/riff'
+license=('MIT')
+depends=('alsa-lib' 'libpulse')
+makedepends=('cargo' 'pkgconf')
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Nicolas25vlad/riff/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('@SHA256@')
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export CARGO_TARGET_DIR=target
+  cargo build --release
+}
+
+check() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export CARGO_TARGET_DIR=target
+  cargo test --all-features --no-fail-fast
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 target/release/riff "${pkgdir}/usr/bin/riff"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
