@@ -21,55 +21,40 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Validate shell helpers
         run: bash -n install.sh scripts/deps.sh scripts/check-tui-quality.sh
-
       - name: Install Linux audio dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - name: Cache
         uses: Swatinem/rust-cache@v2
-
       - name: Check dependency helper
         run: bash scripts/deps.sh check
-
+      - name: Verify Cargo.lock
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - name: Check formatting
         run: cargo fmt --all -- --check
-
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --all-features --no-fail-fast
-
+        run: cargo test --locked --all-features --no-fail-fast
       - name: Check
-        run: cargo check --all-targets --all-features
-
+        run: cargo check --locked --all-targets --all-features
       - name: CLI smoke test
         shell: bash
         run: |
-          cargo build --all-features
+          cargo build --locked --all-features
           ./target/debug/riff --version
           ./target/debug/riff validate examples/coding-metal.riff
           ./target/debug/riff inspect examples/coding-metal.riff
-
       - name: Write job summary
         if: always()
-        shell: bash
         run: |
-          {
-            echo '## Linux quality'
-            echo
-            echo '- Commit: `${{ github.sha }}`'
-            echo '- Rust: `stable`'
-            echo '- Checks: fmt, clippy, tests, cargo check, CLI smoke test'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo '## Linux quality' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Checks: lockfile, fmt, clippy, tests, cargo check, CLI smoke test' >> "$GITHUB_STEP_SUMMARY"
 
   tui-quality:
     name: TUI quality gate
@@ -78,30 +63,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Linux audio dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache
         uses: Swatinem/rust-cache@v2
-
       - name: Enforce terminal ownership and Workbench tests
         run: bash scripts/check-tui-quality.sh
-
       - name: Write TUI quality summary
         if: always()
-        shell: bash
         run: |
-          {
-            echo '## TUI quality gate'
-            echo
-            echo '- No direct stdout/stderr writes from `src/workbench`'
-            echo '- No CLI/env_logger initialization from Workbench code'
-            echo '- Workbench-specific input/hitbox tests executed'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo '## TUI quality gate' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Terminal ownership, semantic input, hitboxes and virtual wide/compact rendering' >> "$GITHUB_STEP_SUMMARY"
 
   windows:
     name: Windows 11 compatible build
@@ -110,39 +84,33 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - name: Cache
         uses: Swatinem/rust-cache@v2
-
       - name: Validate PowerShell installer
         shell: pwsh
         run: $null = [scriptblock]::Create((Get-Content -Raw ./install.ps1))
-
+      - name: Verify Cargo.lock
+        shell: pwsh
+        run: cargo metadata --locked --format-version 1 | Out-Null
       - name: Check formatting
         run: cargo fmt --all -- --check
-
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --all-features --no-fail-fast
-
+        run: cargo test --locked --all-features --no-fail-fast
       - name: Check
-        run: cargo check --all-targets --all-features
-
+        run: cargo check --locked --all-targets --all-features
       - name: CLI smoke test
         shell: pwsh
         run: |
-          cargo build --all-features
+          cargo build --locked --all-features
           .\target\debug\riff.exe --version
           .\target\debug\riff.exe validate examples\coding-metal.riff
           .\target\debug\riff.exe inspect examples\coding-metal.riff
-
       - name: Write job summary
         if: always()
         shell: pwsh
@@ -150,7 +118,5 @@ jobs:
           @"
           ## Windows quality
 
-          - Commit: `${{ github.sha }}`
-          - Rust: `stable`
-          - Checks: fmt, clippy, tests, cargo check, CLI smoke test
+          - Checks: lockfile, fmt, clippy, tests, cargo check, CLI smoke test
           "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY
