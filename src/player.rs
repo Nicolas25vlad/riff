@@ -71,8 +71,6 @@ impl Default for PlayerOptions {
 }
 
 pub async fn run(options: PlayerOptions) -> Result<(), String> {
-    init_cli_logging();
-
     let (session_config, cache, credentials) = session_parts()?;
     let player_config = PlayerConfig::default();
     let audio_format = AudioFormat::default();
@@ -419,19 +417,15 @@ mod tests {
 
     #[test]
     fn validates_spotify_track_ids() {
-        assert!(is_spotify_track_ids("spotify:track:6tRHtqNabJIQVXbyY9AnMU"));
-        assert!(!is_spotify_track_ids(
+        assert!(is_spotify_track_uri("spotify:track:6tRHtqNabJIQVXbyY9AnMU"));
+        assert!(!is_spotify_track_uri(
             "spotify:album:6tRHtqNabJIQVXbyY9AnMU"
         ));
-        assert!(!is_spotify_track_ids("spotify:track:"));
+        assert!(!is_spotify_track_uri("spotify:track:"));
     }
 
     #[test]
     fn formats_track_duration() {
         assert_eq!(format_duration(475_000), "7:55");
-    }
-
-    fn is_spotify_track_ids(uri: &str) -> bool {
-        is_spotify_track_uri(uri)
     }
 }
