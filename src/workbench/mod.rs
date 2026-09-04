@@ -55,12 +55,6 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     if playlist.tracks.is_empty() {
         return Err("playlist has no tracks to play".to_string());
     }
-
-    println!(
-        "Opening Riff Workbench for `{}` ({} tracks)...",
-        playlist.name,
-        playlist.tracks.len()
-    );
     let queue = player_task::resolve_queue(&playlist).await?;
     let editor = EditorState::load(&file_path)?;
     let file_name = file_path
