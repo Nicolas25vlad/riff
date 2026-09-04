@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish Riff 0.6.0 to crates.io
+    name: Publish riff-music 0.6.0 to crates.io
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -39,19 +39,24 @@ jobs:
             exit 1
           fi
 
-      - name: Validate bootstrap version
+      - name: Validate bootstrap package and version
         shell: bash
         run: |
           set -euo pipefail
+          package=$(sed -n 's/^name = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          if [[ "$package" != "riff-music" ]]; then
+            echo "::error::Bootstrap publisher expects package riff-music but Cargo.toml contains $package."
+            exit 1
+          fi
           if [[ "$version" != "0.6.0" ]]; then
             echo "::error::Bootstrap publisher is pinned to 0.6.0 but Cargo.toml contains $version."
             exit 1
           fi
-          echo "Publishing Riff $version"
+          echo "Publishing $package $version (binary: riff)"
 
       - name: Final crates.io dry run
         run: cargo publish --dry-run
 
       - name: Publish crates.io
-        run: cargo publish --token "$CARGO_REGISTRY_TOKEN"
+        run: cargo publish
