@@ -4,13 +4,7 @@ mod model;
 mod player_task;
 mod theme;
 
-use std::{
-    collections::HashMap,
-    fs, io,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, fs, io, path::PathBuf, sync::Arc, time::Duration};
 
 use crossterm::{
     event::{
@@ -30,7 +24,7 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Padding, Paragraph, Wrap},
 };
 use ratatui_image::{Image as TerminalImage, Resize, picker::Picker, protocol::Protocol};
-use riff::{Playlist, Track};
+use riff::Playlist;
 use tokio::sync::mpsc;
 
 use editor::EditorState;
@@ -626,17 +620,16 @@ fn handle_mouse(
                         (VOLUME_MAX as f64 * relative.clamp(0.0, 1.0)) as u16,
                     ));
                 }
-            } else if workbench.state.view == View::Search {
-                if let Some((index, _)) = workbench
+            } else if workbench.state.view == View::Search
+                && let Some((index, _)) = workbench
                     .state
                     .hits
                     .search_rows
                     .iter()
                     .find(|(_, rect)| contains(*rect, point))
-                {
-                    workbench.state.search.selected = *index;
-                    request_selected_search_artwork(workbench, controls);
-                }
+            {
+                workbench.state.search.selected = *index;
+                request_selected_search_artwork(workbench, controls);
             }
         }
         MouseEventKind::ScrollUp => {
@@ -1330,23 +1323,6 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
         .show_cursor()
         .map_err(|error| format!("could not restore cursor: {error}"))
 }
-
-pub fn create_playlist(path: &Path, name: &str) -> Result<Playlist, String> {
-    if path.exists() {
-        return Err(format!("{} already exists", path.display()));
-    }
-    if name.trim().is_empty() || name.contains('"') {
-        return Err("playlist name must be non-empty and cannot contain quotes".into());
-    }
-    let playlist = Playlist {
-        name: name.to_string(),
-        tracks: Vec::<Track>::new(),
-    };
-    let source = format!("playlist \"{}\" {{\n}}\n", playlist.name);
-    fs::write(path, source).map_err(|error| format!("could not create playlist: {error}"))?;
-    Ok(playlist)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

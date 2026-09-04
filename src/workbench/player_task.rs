@@ -26,6 +26,8 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::model::{LyricsLine, PlaybackStatus, QueueItem};
 
+type LyricsCache = Arc<Mutex<HashMap<String, (String, Vec<LyricsLine>)>>>;
+
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const OAUTH_SCOPES: &[&str] = &[
     "streaming",
@@ -363,7 +365,7 @@ fn request_lyrics(
     session: Session,
     uri: String,
     updates: mpsc::UnboundedSender<PlayerUpdate>,
-    cache: Arc<Mutex<HashMap<String, (String, Vec<LyricsLine>)>>>,
+    cache: LyricsCache,
     pending: Arc<Mutex<HashSet<String>>>,
 ) {
     tokio::spawn(async move {
