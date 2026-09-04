@@ -4,13 +4,22 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, for example v0.6.3
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   validate:
@@ -21,6 +30,8 @@ jobs:
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Validate tag matches Cargo.toml
         id: version
@@ -29,8 +40,8 @@ jobs:
           set -euo pipefail
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
           test -n "$version"
-          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}."
+          if [[ "${RELEASE_TAG}" != "v${version}" ]]; then
+            echo "::error::Tag ${RELEASE_TAG} does not match Cargo.toml version ${version}."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -52,6 +63,8 @@ jobs:
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Linux audio dependencies
         if: runner.os == 'Linux'
@@ -115,6 +128,8 @@ jobs:
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download release files
         uses: actions/download-artifact@v4
@@ -148,8 +163,42 @@ EOF
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" dist/* \
+          gh release create "${RELEASE_TAG}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "Riff ${GITHUB_REF_NAME}" \
+            --title "Riff ${RELEASE_TAG}" \
             --notes-file release-notes.md \
             --verify-tag
+
+  crates-io:
+    name: Publish crates.io
+    needs: [validate, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Linux audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Require crates.io token
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CARGO_REGISTRY_TOKEN:-}" || { echo '::error::Missing CARGO_REGISTRY_TOKEN'; exit 1; }
+
+      - name: Final crates.io dry run
+        run: cargo publish --dry-run
+
+      - name: Publish crates.io
+        run: cargo publish
