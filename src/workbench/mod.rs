@@ -151,7 +151,9 @@ async fn run_terminal(
             if event::poll(Duration::from_millis(40))
                 .map_err(|error| format!("could not poll terminal input: {error}"))?
             {
-                match event::read().map_err(|error| format!("could not read terminal input: {error}"))? {
+                match event::read()
+                    .map_err(|error| format!("could not read terminal input: {error}"))?
+                {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if handle_key(workbench, key, &controls)? {
                             break;
@@ -202,7 +204,8 @@ fn apply_player_update(
         PlayerUpdate::Shuffle(shuffle) => workbench.state.shuffle = shuffle,
         PlayerUpdate::Repeat(repeat) => workbench.state.repeat = repeat,
         PlayerUpdate::Artwork { key, image } => {
-            if workbench.artwork.contains_key(&key) || workbench.artwork_pending.contains_key(&key) {
+            if workbench.artwork.contains_key(&key) || workbench.artwork_pending.contains_key(&key)
+            {
                 return Ok(());
             }
             workbench.artwork_pending.insert(key.clone(), true);
@@ -224,7 +227,11 @@ fn apply_player_update(
                 workbench.state.search.error = Some(error);
             }
         }
-        PlayerUpdate::Lyrics { uri, provider, lines } => {
+        PlayerUpdate::Lyrics {
+            uri,
+            provider,
+            lines,
+        } => {
             if workbench.state.current_uri.as_deref() == Some(uri.as_str()) {
                 workbench.state.lyrics.track_uri = Some(uri);
                 workbench.state.lyrics.provider = Some(provider);
@@ -254,7 +261,14 @@ fn render_artwork(
     let compact = picker.new_protocol((*image).clone(), COMPACT_ART_SIZE, Resize::Fit(None));
     let search = picker.new_protocol((*image).clone(), SEARCH_ART_SIZE, Resize::Fit(None));
     if let (Ok(wide), Ok(compact), Ok(search)) = (wide, compact, search) {
-        let _ = tx.send((key, RenderedArtwork { wide, compact, search }));
+        let _ = tx.send((
+            key,
+            RenderedArtwork {
+                wide,
+                compact,
+                search,
+            },
+        ));
     }
 }
 
@@ -386,15 +400,13 @@ fn handle_editor_key(
 ) -> Result<bool, String> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
-            KeyCode::Char('s') => {
-                match workbench.editor.save(&workbench.state.file_path) {
-                    Ok(()) => {
-                        workbench.state.git = git_context::detect(&workbench.state.file_path);
-                        workbench.state.message = "editor · saved and validated".into();
-                    }
-                    Err(error) => workbench.editor.message = error,
+            KeyCode::Char('s') => match workbench.editor.save(&workbench.state.file_path) {
+                Ok(()) => {
+                    workbench.state.git = git_context::detect(&workbench.state.file_path);
+                    workbench.state.message = "editor · saved and validated".into();
                 }
-            }
+                Err(error) => workbench.editor.message = error,
+            },
             KeyCode::Char('k') => workbench.editor.cut_line(),
             KeyCode::Char('u') => workbench.editor.paste_line(),
             KeyCode::Char('g') => {
@@ -417,7 +429,9 @@ fn handle_editor_key(
         KeyCode::Up => workbench.editor.move_up(),
         KeyCode::Down => workbench.editor.move_down(),
         KeyCode::Home => workbench.editor.col = 0,
-        KeyCode::End => workbench.editor.col = workbench.editor.lines[workbench.editor.row].chars().count(),
+        KeyCode::End => {
+            workbench.editor.col = workbench.editor.lines[workbench.editor.row].chars().count()
+        }
         KeyCode::Backspace => workbench.editor.backspace(),
         KeyCode::Delete => workbench.editor.delete(),
         KeyCode::Enter => workbench.editor.newline(),
@@ -465,13 +479,19 @@ fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> 
     let source = fs::read_to_string(&workbench.state.file_path)
         .map_err(|error| format!("could not read playlist: {error}"))?;
     let playlist = Playlist::parse(&source).map_err(|error| error.to_string())?;
-    if playlist.tracks.iter().any(|track| track.id.as_deref() == Some(item.uri.as_str())) {
+    if playlist
+        .tracks
+        .iter()
+        .any(|track| track.id.as_deref() == Some(item.uri.as_str()))
+    {
         workbench.state.message = "track already exists in this .riff playlist".into();
         return Ok(());
     }
 
     let line = format!("    track \"{}\" id=\"{}\"\n", item.label(), item.uri);
-    let insert_at = source.rfind('}').ok_or_else(|| "playlist is missing closing brace".to_string())?;
+    let insert_at = source
+        .rfind('}')
+        .ok_or_else(|| "playlist is missing closing brace".to_string())?;
     let mut updated = String::with_capacity(source.len() + line.len());
     updated.push_str(&source[..insert_at]);
     if !updated.ends_with('\n') {
@@ -479,7 +499,8 @@ fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> 
     }
     updated.push_str(&line);
     updated.push_str(&source[insert_at..]);
-    Playlist::parse(&updated).map_err(|error| format!("refusing to write invalid playlist: {error}"))?;
+    Playlist::parse(&updated)
+        .map_err(|error| format!("refusing to write invalid playlist: {error}"))?;
     fs::write(&workbench.state.file_path, updated)
         .map_err(|error| format!("could not update playlist: {error}"))?;
 
@@ -492,11 +513,7 @@ fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> 
     Ok(())
 }
 
-fn seek_relative(
-    workbench: &Workbench,
-    delta_ms: i64,
-    controls: &mpsc::UnboundedSender<Control>,
-) {
+fn seek_relative(workbench: &Workbench, delta_ms: i64, controls: &mpsc::UnboundedSender<Control>) {
     let duration = workbench.state.duration_ms();
     if duration == 0 {
         return;
@@ -506,7 +523,12 @@ fn seek_relative(
 }
 
 fn request_current_artwork(workbench: &mut Workbench, controls: &mpsc::UnboundedSender<Control>) {
-    let Some(item) = workbench.state.current().cloned().or_else(|| workbench.state.queue.first().cloned()) else {
+    let Some(item) = workbench
+        .state
+        .current()
+        .cloned()
+        .or_else(|| workbench.state.queue.first().cloned())
+    else {
         return;
     };
     request_item_artwork(workbench, &item, controls);
@@ -526,13 +548,18 @@ fn request_item_artwork(
     item: &QueueItem,
     controls: &mpsc::UnboundedSender<Control>,
 ) {
-    if workbench.artwork.contains_key(&item.uri) || workbench.artwork_pending.contains_key(&item.uri) {
+    if workbench.artwork.contains_key(&item.uri)
+        || workbench.artwork_pending.contains_key(&item.uri)
+    {
         return;
     }
     let Some(cover_id) = item.cover_id.clone() else {
         return;
     };
-    let _ = controls.send(Control::RequestArtwork { key: item.uri.clone(), cover_id });
+    let _ = controls.send(Control::RequestArtwork {
+        key: item.uri.clone(),
+        cover_id,
+    });
 }
 
 fn handle_mouse(
@@ -543,29 +570,70 @@ fn handle_mouse(
     let point = (mouse.column, mouse.row);
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            if let Some((view, _)) = workbench.state.hits.tabs.iter().find(|(_, rect)| contains(*rect, point)) {
+            if let Some((view, _)) = workbench
+                .state
+                .hits
+                .tabs
+                .iter()
+                .find(|(_, rect)| contains(*rect, point))
+            {
                 workbench.state.view = *view;
                 return Ok(());
             }
-            if workbench.state.hits.previous.is_some_and(|rect| contains(rect, point)) {
+            if workbench
+                .state
+                .hits
+                .previous
+                .is_some_and(|rect| contains(rect, point))
+            {
                 let _ = controls.send(Control::Previous);
-            } else if workbench.state.hits.toggle.is_some_and(|rect| contains(rect, point)) {
+            } else if workbench
+                .state
+                .hits
+                .toggle
+                .is_some_and(|rect| contains(rect, point))
+            {
                 let _ = controls.send(Control::Toggle);
-            } else if workbench.state.hits.next.is_some_and(|rect| contains(rect, point)) {
+            } else if workbench
+                .state
+                .hits
+                .next
+                .is_some_and(|rect| contains(rect, point))
+            {
                 let _ = controls.send(Control::Next);
-            } else if let Some(rect) = workbench.state.hits.progress.filter(|rect| contains(*rect, point)) {
+            } else if let Some(rect) = workbench
+                .state
+                .hits
+                .progress
+                .filter(|rect| contains(*rect, point))
+            {
                 let duration = workbench.state.duration_ms();
                 if duration > 0 && rect.width > 1 {
                     let relative = mouse.column.saturating_sub(rect.x) as f64 / rect.width as f64;
-                    let _ = controls.send(Control::Seek((duration as f64 * relative.clamp(0.0, 1.0)) as u32));
+                    let _ = controls.send(Control::Seek(
+                        (duration as f64 * relative.clamp(0.0, 1.0)) as u32,
+                    ));
                 }
-            } else if let Some(rect) = workbench.state.hits.volume.filter(|rect| contains(*rect, point)) {
+            } else if let Some(rect) = workbench
+                .state
+                .hits
+                .volume
+                .filter(|rect| contains(*rect, point))
+            {
                 if rect.width > 1 {
                     let relative = mouse.column.saturating_sub(rect.x) as f64 / rect.width as f64;
-                    let _ = controls.send(Control::SetVolume((VOLUME_MAX as f64 * relative.clamp(0.0, 1.0)) as u16));
+                    let _ = controls.send(Control::SetVolume(
+                        (VOLUME_MAX as f64 * relative.clamp(0.0, 1.0)) as u16,
+                    ));
                 }
             } else if workbench.state.view == View::Search {
-                if let Some((index, _)) = workbench.state.hits.search_rows.iter().find(|(_, rect)| contains(*rect, point)) {
+                if let Some((index, _)) = workbench
+                    .state
+                    .hits
+                    .search_rows
+                    .iter()
+                    .find(|(_, rect)| contains(*rect, point))
+                {
                     workbench.state.search.selected = *index;
                     request_selected_search_artwork(workbench, controls);
                 }
@@ -601,7 +669,10 @@ fn contains(rect: Rect, point: (u16, u16)) -> bool {
 
 fn draw(frame: &mut Frame<'_>, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
-    frame.render_widget(Block::default().style(Style::default().bg(theme.background).fg(theme.foreground)), frame.area());
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.background).fg(theme.foreground)),
+        frame.area(),
+    );
     workbench.state.hits = HitMap::default();
 
     let outer = Layout::default()
@@ -631,9 +702,17 @@ fn draw(frame: &mut Frame<'_>, workbench: &mut Workbench) {
 fn draw_header(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let theme = workbench.state.theme;
     let mut spans = vec![
-        Span::styled(" RIFF ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " RIFF ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
-        Span::styled(&workbench.state.file_name, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            &workbench.state.file_name,
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
     ];
     if let Some(git) = &workbench.state.git {
         spans.push(Span::raw("   "));
@@ -643,22 +722,35 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
         ));
     }
     spans.push(Span::raw("   "));
-    spans.push(Span::styled(format!("theme:{}", theme.name), Style::default().fg(theme.muted)));
+    spans.push(Span::styled(
+        format!("theme:{}", theme.name),
+        Style::default().fg(theme.muted),
+    ));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_tabs(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
     let constraints = View::ALL.map(|_| Constraint::Ratio(1, View::ALL.len() as u32));
-    let columns = Layout::default().direction(Direction::Horizontal).constraints(constraints).split(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
     for (index, view) in View::ALL.iter().copied().enumerate() {
         let selected = view == workbench.state.view;
         let style = if selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             Style::default().fg(theme.muted)
         };
-        frame.render_widget(Paragraph::new(view.title()).alignment(Alignment::Center).style(style), columns[index]);
+        frame.render_widget(
+            Paragraph::new(view.title())
+                .alignment(Alignment::Center)
+                .style(style),
+            columns[index],
+        );
         workbench.state.hits.tabs.push((view, columns[index]));
     }
 }
@@ -669,7 +761,13 @@ fn draw_now_playing(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(34), Constraint::Min(32)])
             .split(area);
-        draw_art(frame, columns[0], workbench, false, current_art_key(workbench));
+        draw_art(
+            frame,
+            columns[0],
+            workbench,
+            false,
+            current_art_key(workbench),
+        );
         draw_metadata(frame, columns[1], workbench);
     } else if area.height >= 20 {
         let rows = Layout::default()
@@ -684,10 +782,20 @@ fn draw_now_playing(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
 }
 
 fn current_art_key(workbench: &Workbench) -> Option<&str> {
-    workbench.state.current_uri.as_deref().or_else(|| workbench.state.queue.first().map(|item| item.uri.as_str()))
+    workbench
+        .state
+        .current_uri
+        .as_deref()
+        .or_else(|| workbench.state.queue.first().map(|item| item.uri.as_str()))
 }
 
-fn draw_art(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench, compact: bool, key: Option<&str>) {
+fn draw_art(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    workbench: &Workbench,
+    compact: bool,
+    key: Option<&str>,
+) {
     let theme = workbench.state.theme;
     let block = Block::default()
         .borders(Borders::ALL)
@@ -696,12 +804,23 @@ fn draw_art(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench, compact: b
         .padding(Padding::uniform(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let Some(key) = key else { return; };
-    let Some(artwork) = workbench.artwork.get(key) else {
-        frame.render_widget(Paragraph::new("loading artwork…").alignment(Alignment::Center).style(Style::default().fg(theme.muted)), inner);
+    let Some(key) = key else {
         return;
     };
-    let protocol = if compact { &artwork.compact } else { &artwork.wide };
+    let Some(artwork) = workbench.artwork.get(key) else {
+        frame.render_widget(
+            Paragraph::new("loading artwork…")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.muted)),
+            inner,
+        );
+        return;
+    };
+    let protocol = if compact {
+        &artwork.compact
+    } else {
+        &artwork.wide
+    };
     frame.render_widget(TerminalImage::new(protocol).allow_clipping(true), inner);
 }
 
@@ -714,33 +833,74 @@ fn draw_metadata(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
         .padding(Padding::new(2, 2, 1, 1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let Some(current) = workbench.state.current().or_else(|| workbench.state.queue.first()) else { return; };
+    let Some(current) = workbench
+        .state
+        .current()
+        .or_else(|| workbench.state.queue.first())
+    else {
+        return;
+    };
     let mut lines = vec![
-        Line::from(Span::styled(format!("{}  {}", workbench.state.status.glyph(), workbench.state.status.label().to_uppercase()), Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            format!(
+                "{}  {}",
+                workbench.state.status.glyph(),
+                workbench.state.status.label().to_uppercase()
+            ),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from(Span::styled(&current.title, Style::default().add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled(&current.artist, Style::default().fg(theme.accent))),
+        Line::from(Span::styled(
+            &current.title,
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            &current.artist,
+            Style::default().fg(theme.accent),
+        )),
         Line::from(""),
         Line::from(format!("album    {}", current.album)),
     ];
-    if let Some(version) = &current.version { lines.push(Line::from(format!("version  {version}"))); }
-    lines.push(Line::from(Span::styled(&current.uri, Style::default().fg(theme.muted))));
+    if let Some(version) = &current.version {
+        lines.push(Line::from(format!("version  {version}")));
+    }
+    lines.push(Line::from(Span::styled(
+        &current.uri,
+        Style::default().fg(theme.muted),
+    )));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
-    let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(3), Constraint::Min(4)]).split(area);
-    let prompt = Paragraph::new(format!("> {}▏", workbench.state.search.query))
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.accent)).title(" smart search "));
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(4)])
+        .split(area);
+    let prompt = Paragraph::new(format!("> {}▏", workbench.state.search.query)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(" smart search "),
+    );
     frame.render_widget(prompt, rows[0]);
 
     if workbench.state.search.searching {
-        frame.render_widget(Paragraph::new("Searching Spotify…").alignment(Alignment::Center), rows[1]);
+        frame.render_widget(
+            Paragraph::new("Searching Spotify…").alignment(Alignment::Center),
+            rows[1],
+        );
         return;
     }
     if let Some(error) = &workbench.state.search.error {
-        frame.render_widget(Paragraph::new(error.as_str()).style(Style::default().fg(theme.danger)).wrap(Wrap { trim: true }), rows[1]);
+        frame.render_widget(
+            Paragraph::new(error.as_str())
+                .style(Style::default().fg(theme.danger))
+                .wrap(Wrap { trim: true }),
+            rows[1],
+        );
         return;
     }
     if workbench.state.search.results.is_empty() {
@@ -748,45 +908,106 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
         return;
     }
 
-    let columns = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(65), Constraint::Percentage(35)]).split(rows[1]);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(rows[1]);
     workbench.state.hits.search_rows.clear();
     let visible_height = columns[0].height.saturating_sub(2) as usize;
     let selected = workbench.state.search.selected;
     let start = selected.saturating_sub(visible_height / 2);
-    let items = workbench.state.search.results.iter().enumerate().skip(start).take(visible_height).map(|(index, item)| {
-        let score = item.match_score.map(|score| format!(" {score:>3}%")).unwrap_or_default();
-        let version = item.version.as_ref().map(|value| format!(" · {value}")).unwrap_or_default();
-        let text = format!("{}  {}\n     {} · {}{}", score, item.title, item.artist, item.album, version);
-        let style = if index == selected { Style::default().bg(theme.selection).fg(theme.foreground).add_modifier(Modifier::BOLD) } else { Style::default() };
-        ListItem::new(text).style(style)
-    }).collect::<Vec<_>>();
-    let list_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.border)).title(format!(" results · {} ", workbench.state.search.results.len()));
+    let items = workbench
+        .state
+        .search
+        .results
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible_height)
+        .map(|(index, item)| {
+            let score = item
+                .match_score
+                .map(|score| format!(" {score:>3}%"))
+                .unwrap_or_default();
+            let version = item
+                .version
+                .as_ref()
+                .map(|value| format!(" · {value}"))
+                .unwrap_or_default();
+            let text = format!(
+                "{}  {}\n     {} · {}{}",
+                score, item.title, item.artist, item.album, version
+            );
+            let style = if index == selected {
+                Style::default()
+                    .bg(theme.selection)
+                    .fg(theme.foreground)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(text).style(style)
+        })
+        .collect::<Vec<_>>();
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(format!(
+            " results · {} ",
+            workbench.state.search.results.len()
+        ));
     frame.render_widget(List::new(items).block(list_block), columns[0]);
 
-    for visible in 0..visible_height.min(workbench.state.search.results.len().saturating_sub(start)) {
-        let y = columns[0].y.saturating_add(1).saturating_add((visible as u16).saturating_mul(2));
+    for visible in 0..visible_height.min(workbench.state.search.results.len().saturating_sub(start))
+    {
+        let y = columns[0]
+            .y
+            .saturating_add(1)
+            .saturating_add((visible as u16).saturating_mul(2));
         if y < columns[0].bottom() {
-            workbench.state.hits.search_rows.push((start + visible, Rect::new(columns[0].x + 1, y, columns[0].width.saturating_sub(2), 2)));
+            workbench.state.hits.search_rows.push((
+                start + visible,
+                Rect::new(columns[0].x + 1, y, columns[0].width.saturating_sub(2), 2),
+            ));
         }
     }
 
     if let Some(item) = workbench.state.search.selected() {
-        let right = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(13), Constraint::Min(5)]).split(columns[1]);
-        let art_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.border)).title(" selected ").padding(Padding::uniform(1));
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(13), Constraint::Min(5)])
+            .split(columns[1]);
+        let art_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .title(" selected ")
+            .padding(Padding::uniform(1));
         let inner = art_block.inner(right[0]);
         frame.render_widget(art_block, right[0]);
         if let Some(art) = workbench.artwork.get(&item.uri) {
             frame.render_widget(TerminalImage::new(&art.search).allow_clipping(true), inner);
         } else {
-            frame.render_widget(Paragraph::new("loading cover…").alignment(Alignment::Center), inner);
+            frame.render_widget(
+                Paragraph::new("loading cover…").alignment(Alignment::Center),
+                inner,
+            );
         }
         let details = vec![
-            Line::from(Span::styled(&item.title, Style::default().add_modifier(Modifier::BOLD))),
-            Line::from(Span::styled(&item.artist, Style::default().fg(theme.accent))),
+            Line::from(Span::styled(
+                &item.title,
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                &item.artist,
+                Style::default().fg(theme.accent),
+            )),
             Line::from(item.album.as_str()),
             Line::from(format_duration(item.duration_ms)),
             Line::from(""),
-            Line::from(Span::styled("Enter play · Ctrl+A add to .riff", Style::default().fg(theme.muted))),
+            Line::from(Span::styled(
+                "Enter play · Ctrl+A add to .riff",
+                Style::default().fg(theme.muted),
+            )),
         ];
         frame.render_widget(Paragraph::new(details).wrap(Wrap { trim: true }), right[1]);
     }
@@ -795,71 +1016,172 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
 fn draw_playlist(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let theme = workbench.state.theme;
     let current = workbench.state.current_index();
-    let items = workbench.state.queue.iter().enumerate().map(|(index, item)| {
-        let prefix = if Some(index) == current { "▶" } else { " " };
-        let text = format!("{prefix} {:>2}. {}\n      {} · {}", index + 1, item.title, item.artist, item.album);
-        let style = if Some(index) == current { Style::default().fg(theme.accent).add_modifier(Modifier::BOLD) } else { Style::default() };
-        ListItem::new(text).style(style)
-    }).collect::<Vec<_>>();
+    let items = workbench
+        .state
+        .queue
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let prefix = if Some(index) == current { "▶" } else { " " };
+            let text = format!(
+                "{prefix} {:>2}. {}\n      {} · {}",
+                index + 1,
+                item.title,
+                item.artist,
+                item.album
+            );
+            let style = if Some(index) == current {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(text).style(style)
+        })
+        .collect::<Vec<_>>();
     frame.render_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.border)).title(format!(" {} · {} tracks · generated by code or TUI ", workbench.state.playlist_name, workbench.state.queue.len()))),
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .title(format!(
+                    " {} · {} tracks · generated by code or TUI ",
+                    workbench.state.playlist_name,
+                    workbench.state.queue.len()
+                )),
+        ),
         area,
     );
 }
 
 fn draw_lyrics(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let theme = workbench.state.theme;
-    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.border)).title(format!(" lyrics{} ", workbench.state.lyrics.provider.as_ref().map(|provider| format!(" · {provider}")).unwrap_or_default()));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(format!(
+            " lyrics{} ",
+            workbench
+                .state
+                .lyrics
+                .provider
+                .as_ref()
+                .map(|provider| format!(" · {provider}"))
+                .unwrap_or_default()
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if workbench.state.lyrics.loading {
-        frame.render_widget(Paragraph::new("Loading synchronized lyrics…").alignment(Alignment::Center), inner);
+        frame.render_widget(
+            Paragraph::new("Loading synchronized lyrics…").alignment(Alignment::Center),
+            inner,
+        );
         return;
     }
     if let Some(error) = &workbench.state.lyrics.error {
-        frame.render_widget(Paragraph::new(format!("No synced lyrics for this track.\n\n{error}")).alignment(Alignment::Center).style(Style::default().fg(theme.muted)).wrap(Wrap { trim: true }), inner);
+        frame.render_widget(
+            Paragraph::new(format!("No synced lyrics for this track.\n\n{error}"))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.muted))
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
         return;
     }
     if workbench.state.lyrics.lines.is_empty() {
-        frame.render_widget(Paragraph::new("Lyrics will appear when playback starts.").alignment(Alignment::Center), inner);
+        frame.render_widget(
+            Paragraph::new("Lyrics will appear when playback starts.").alignment(Alignment::Center),
+            inner,
+        );
         return;
     }
-    let active = workbench.state.lyrics.active_line(workbench.state.position_ms).unwrap_or(0);
+    let active = workbench
+        .state
+        .lyrics
+        .active_line(workbench.state.position_ms)
+        .unwrap_or(0);
     let radius = (inner.height as usize / 2).max(2);
     let start = active.saturating_sub(radius);
     let end = (active + radius + 1).min(workbench.state.lyrics.lines.len());
-    let lines = workbench.state.lyrics.lines[start..end].iter().enumerate().flat_map(|(offset, line)| {
-        let index = start + offset;
-        let style = if index == active {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.muted)
-        };
-        [Line::from(Span::styled(line.text.clone(), style)).alignment(Alignment::Center), Line::from("")]
-    }).collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).wrap(Wrap { trim: true }), inner);
+    let lines = workbench.state.lyrics.lines[start..end]
+        .iter()
+        .enumerate()
+        .flat_map(|(offset, line)| {
+            let index = start + offset;
+            let style = if index == active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            [
+                Line::from(Span::styled(line.text.clone(), style)).alignment(Alignment::Center),
+                Line::from(""),
+            ]
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
 }
 
 fn draw_editor(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
-    let title = format!(" nano-ish editor · {}{} ", workbench.state.file_name, if workbench.editor.dirty { " *" } else { "" });
-    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.border)).title(title);
+    let title = format!(
+        " nano-ish editor · {}{} ",
+        workbench.state.file_name,
+        if workbench.editor.dirty { " *" } else { "" }
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let height = inner.height.saturating_sub(1) as usize;
     workbench.editor.ensure_cursor_visible(height);
-    let lines = workbench.editor.lines.iter().enumerate().skip(workbench.editor.scroll).take(height).map(|(index, source)| {
-        let mut spans = vec![Span::styled(format!("{:>4} │ ", index + 1), Style::default().fg(theme.muted))];
-        spans.extend(highlight_riff_line(source, theme));
-        Line::from(spans)
-    }).collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines), Rect::new(inner.x, inner.y, inner.width, inner.height.saturating_sub(1)));
-    frame.render_widget(Paragraph::new(workbench.editor.message.as_str()).style(Style::default().fg(theme.muted)), Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1));
+    let lines = workbench
+        .editor
+        .lines
+        .iter()
+        .enumerate()
+        .skip(workbench.editor.scroll)
+        .take(height)
+        .map(|(index, source)| {
+            let mut spans = vec![Span::styled(
+                format!("{:>4} │ ", index + 1),
+                Style::default().fg(theme.muted),
+            )];
+            spans.extend(highlight_riff_line(source, theme));
+            Line::from(spans)
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        ),
+    );
+    frame.render_widget(
+        Paragraph::new(workbench.editor.message.as_str()).style(Style::default().fg(theme.muted)),
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+    );
 
     let cursor_row = workbench.editor.row.saturating_sub(workbench.editor.scroll) as u16;
     if cursor_row < inner.height.saturating_sub(1) {
         let gutter = 7u16;
-        let x = inner.x.saturating_add(gutter).saturating_add(workbench.editor.col as u16);
+        let x = inner
+            .x
+            .saturating_add(gutter)
+            .saturating_add(workbench.editor.col as u16);
         let y = inner.y.saturating_add(cursor_row);
         frame.set_cursor_position((x.min(inner.right().saturating_sub(1)), y));
     }
@@ -869,9 +1191,16 @@ fn highlight_riff_line(source: &str, theme: Theme) -> Vec<Span<'_>> {
     let trimmed = source.trim_start();
     let leading = source.len().saturating_sub(trimmed.len());
     let mut spans = Vec::new();
-    if leading > 0 { spans.push(Span::raw(&source[..leading])); }
+    if leading > 0 {
+        spans.push(Span::raw(&source[..leading]));
+    }
     if trimmed.starts_with("playlist ") {
-        spans.push(Span::styled("playlist", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            "playlist",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
         spans.push(Span::raw(&trimmed[8..]));
     } else if trimmed.starts_with("track ") {
         spans.push(Span::styled("track", Style::default().fg(theme.accent)));
@@ -886,14 +1215,38 @@ fn highlight_riff_line(source: &str, theme: Theme) -> Vec<Span<'_>> {
 
 fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
-    let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(2), Constraint::Length(2)]).split(area);
-    let top = Layout::default().direction(Direction::Horizontal).constraints([
-        Constraint::Length(8), Constraint::Length(8), Constraint::Length(8), Constraint::Min(10), Constraint::Length(20),
-    ]).split(rows[0]);
-    let previous = Paragraph::new(" ◀ prev ").alignment(Alignment::Center).style(Style::default().fg(theme.accent));
-    let toggle_label = if workbench.state.status == PlaybackStatus::Playing { " Ⅱ pause " } else { " ▶ play " };
-    let toggle = Paragraph::new(toggle_label).alignment(Alignment::Center).style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD));
-    let next = Paragraph::new(" next ▶ ").alignment(Alignment::Center).style(Style::default().fg(theme.accent));
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Length(2)])
+        .split(area);
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Min(10),
+            Constraint::Length(20),
+        ])
+        .split(rows[0]);
+    let previous = Paragraph::new(" ◀ prev ")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(theme.accent));
+    let toggle_label = if workbench.state.status == PlaybackStatus::Playing {
+        " Ⅱ pause "
+    } else {
+        " ▶ play "
+    };
+    let toggle = Paragraph::new(toggle_label)
+        .alignment(Alignment::Center)
+        .style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+    let next = Paragraph::new(" next ▶ ")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(theme.accent));
     frame.render_widget(previous, top[0]);
     frame.render_widget(toggle, top[1]);
     frame.render_widget(next, top[2]);
@@ -901,15 +1254,45 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
     workbench.state.hits.toggle = Some(top[1]);
     workbench.state.hits.next = Some(top[2]);
 
-    let flags = format!("{} shuffle   {} repeat", if workbench.state.shuffle { "●" } else { "○" }, if workbench.state.repeat { "●" } else { "○" });
-    frame.render_widget(Paragraph::new(flags).style(Style::default().fg(theme.muted)), top[3]);
+    let flags = format!(
+        "{} shuffle   {} repeat",
+        if workbench.state.shuffle {
+            "●"
+        } else {
+            "○"
+        },
+        if workbench.state.repeat { "●" } else { "○" }
+    );
+    frame.render_widget(
+        Paragraph::new(flags).style(Style::default().fg(theme.muted)),
+        top[3],
+    );
     let volume_ratio = workbench.state.volume as f64 / VOLUME_MAX as f64;
-    frame.render_widget(Gauge::default().ratio(volume_ratio).label(format!("vol {:>3}%", (volume_ratio * 100.0).round() as u8)), top[4]);
+    frame.render_widget(
+        Gauge::default()
+            .ratio(volume_ratio)
+            .label(format!("vol {:>3}%", (volume_ratio * 100.0).round() as u8)),
+        top[4],
+    );
     workbench.state.hits.volume = Some(top[4]);
 
     let duration = workbench.state.duration_ms();
-    let ratio = if duration == 0 { 0.0 } else { (workbench.state.position_ms as f64 / duration as f64).clamp(0.0, 1.0) };
-    frame.render_widget(Gauge::default().block(Block::default().borders(Borders::TOP)).ratio(ratio).label(format!("{} / {}", format_duration(workbench.state.position_ms), format_duration(duration))), rows[1]);
+    let ratio = if duration == 0 {
+        0.0
+    } else {
+        (workbench.state.position_ms as f64 / duration as f64).clamp(0.0, 1.0)
+    };
+    frame.render_widget(
+        Gauge::default()
+            .block(Block::default().borders(Borders::TOP))
+            .ratio(ratio)
+            .label(format!(
+                "{} / {}",
+                format_duration(workbench.state.position_ms),
+                format_duration(duration)
+            )),
+        rows[1],
+    );
     workbench.state.hits.progress = Some(rows[1]);
 }
 
@@ -918,9 +1301,16 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let hint = match workbench.state.view {
         View::Search => " Enter search/play · ↑↓ select · Ctrl+A add · Ctrl+P play · Esc back ",
         View::Editor => " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ",
-        _ => " Tab views · Space play/pause · h/l prev/next · +/- volume · [/] seek · s shuffle · r repeat · F6 theme · q quit ",
+        _ => {
+            " Tab views · Space play/pause · h/l prev/next · +/- volume · [/] seek · s shuffle · r repeat · F6 theme · q quit "
+        }
     };
-    frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center).style(Style::default().fg(theme.muted)), area);
+    frame.render_widget(
+        Paragraph::new(hint)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme.muted)),
+        area,
+    );
 }
 
 fn format_duration(duration_ms: u32) -> String {
@@ -930,9 +1320,15 @@ fn format_duration(duration_ms: u32) -> String {
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), String> {
     disable_raw_mode().map_err(|error| format!("could not restore terminal mode: {error}"))?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)
-        .map_err(|error| format!("could not leave alternate screen: {error}"))?;
-    terminal.show_cursor().map_err(|error| format!("could not restore cursor: {error}"))
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )
+    .map_err(|error| format!("could not leave alternate screen: {error}"))?;
+    terminal
+        .show_cursor()
+        .map_err(|error| format!("could not restore cursor: {error}"))
 }
 
 pub fn create_playlist(path: &Path, name: &str) -> Result<Playlist, String> {
@@ -942,7 +1338,10 @@ pub fn create_playlist(path: &Path, name: &str) -> Result<Playlist, String> {
     if name.trim().is_empty() || name.contains('"') {
         return Err("playlist name must be non-empty and cannot contain quotes".into());
     }
-    let playlist = Playlist { name: name.to_string(), tracks: Vec::<Track>::new() };
+    let playlist = Playlist {
+        name: name.to_string(),
+        tracks: Vec::<Track>::new(),
+    };
     let source = format!("playlist \"{}\" {{\n}}\n", playlist.name);
     fs::write(path, source).map_err(|error| format!("could not create playlist: {error}"))?;
     Ok(playlist)

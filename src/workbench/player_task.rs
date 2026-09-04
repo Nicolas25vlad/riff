@@ -53,20 +53,38 @@ pub enum Control {
 #[derive(Debug)]
 pub enum PlayerUpdate {
     Status(PlaybackStatus),
-    Track { uri: String, position_ms: u32 },
-    Position { uri: String, position_ms: u32 },
+    Track {
+        uri: String,
+        position_ms: u32,
+    },
+    Position {
+        uri: String,
+        position_ms: u32,
+    },
     Volume(u16),
     Shuffle(bool),
     Repeat(bool),
-    Artwork { key: String, image: Arc<DynamicImage> },
-    SearchResults { query: String, results: Vec<QueueItem> },
-    SearchError { query: String, error: String },
+    Artwork {
+        key: String,
+        image: Arc<DynamicImage>,
+    },
+    SearchResults {
+        query: String,
+        results: Vec<QueueItem>,
+    },
+    SearchError {
+        query: String,
+        error: String,
+    },
     Lyrics {
         uri: String,
         provider: String,
         lines: Vec<LyricsLine>,
     },
-    LyricsError { uri: String, error: String },
+    LyricsError {
+        uri: String,
+        error: String,
+    },
     Error(String),
 }
 
@@ -80,7 +98,12 @@ pub async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String
 
     let mut queue = Vec::with_capacity(playlist.tracks.len());
     for (index, request) in playlist.tracks.iter().enumerate() {
-        println!("  [{}/{}] {}", index + 1, playlist.tracks.len(), request.label);
+        println!(
+            "  [{}/{}] {}",
+            index + 1,
+            playlist.tracks.len(),
+            request.label
+        );
 
         let uri = if let Some(uri) = request.id.as_deref() {
             uri.to_string()
@@ -114,12 +137,17 @@ pub async fn run_player(
     };
     let audio_format = AudioFormat::default();
     let mixer_config = MixerConfig::default();
-    let connect_config = ConnectConfig { name: "Riff".to_string(), ..ConnectConfig::default() };
+    let connect_config = ConnectConfig {
+        name: "Riff".to_string(),
+        ..ConnectConfig::default()
+    };
 
     let sink_builder = platform::audio_sink_builder()?;
-    let mixer_builder = mixer::find(None).ok_or_else(|| "no supported audio mixer was found".to_string())?;
+    let mixer_builder =
+        mixer::find(None).ok_or_else(|| "no supported audio mixer was found".to_string())?;
     let session = Session::new(session_config, Some(cache));
-    let mixer = mixer_builder(mixer_config).map_err(|err| format!("could not start mixer: {err}"))?;
+    let mixer =
+        mixer_builder(mixer_config).map_err(|err| format!("could not start mixer: {err}"))?;
     let player = Player::new(
         player_config,
         session.clone(),
@@ -127,11 +155,14 @@ pub async fn run_player(
         move || sink_builder(None, audio_format),
     );
     let mut player_events = player.get_player_event_channel();
-    let (spirc, spirc_task) = Spirc::new(connect_config, session.clone(), credentials, player, mixer)
-        .await
-        .map_err(|err| format!("could not start Spotify Connect: {err}"))?;
+    let (spirc, spirc_task) =
+        Spirc::new(connect_config, session.clone(), credentials, player, mixer)
+            .await
+            .map_err(|err| format!("could not start Spotify Connect: {err}"))?;
 
-    spirc.activate().map_err(|err| format!("could not activate Spotify Connect device: {err}"))?;
+    spirc
+        .activate()
+        .map_err(|err| format!("could not activate Spotify Connect device: {err}"))?;
     if !queue.is_empty() {
         spirc
             .load(LoadRequest::from_tracks(
@@ -139,13 +170,17 @@ pub async fn run_player(
                 LoadRequestOptions::default(),
             ))
             .map_err(|err| format!("could not load playlist: {err}"))?;
-        spirc.play().map_err(|err| format!("could not start playlist playback: {err}"))?;
+        spirc
+            .play()
+            .map_err(|err| format!("could not start playlist playback: {err}"))?;
     }
     let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Starting));
 
     let artwork_cache = Arc::new(Mutex::new(HashMap::<String, Arc<DynamicImage>>::new()));
     let artwork_pending = Arc::new(Mutex::new(HashSet::<String>::new()));
-    let lyrics_cache = Arc::new(Mutex::new(HashMap::<String, (String, Vec<LyricsLine>)>::new()));
+    let lyrics_cache = Arc::new(Mutex::new(
+        HashMap::<String, (String, Vec<LyricsLine>)>::new(),
+    ));
     let lyrics_pending = Arc::new(Mutex::new(HashSet::<String>::new()));
 
     tokio::pin!(spirc_task);
@@ -228,14 +263,20 @@ fn spawn_search(session: Session, query: String, updates: mpsc::UnboundedSender<
 
         let mut results = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let score = candidate.metadata.get("match").and_then(|value| value.parse::<u8>().ok());
+            let score = candidate
+                .metadata
+                .get("match")
+                .and_then(|value| value.parse::<u8>().ok());
             match queue_item_from_uri(&session, &candidate.uri).await {
                 Ok(mut item) => {
                     item.match_score = score;
                     results.push(item);
                 }
                 Err(error) => {
-                    let _ = updates.send(PlayerUpdate::SearchError { query: query.clone(), error });
+                    let _ = updates.send(PlayerUpdate::SearchError {
+                        query: query.clone(),
+                        error,
+                    });
                     return;
                 }
             }
@@ -250,13 +291,29 @@ async fn queue_item_from_uri(session: &Session, uri: &str) -> Result<QueueItem, 
     let track = SpotifyTrack::get(session, &spotify_uri)
         .await
         .map_err(|err| format!("could not load metadata for `{uri}`: {err}"))?;
-    let artist = track.artists.iter().map(|artist| artist.name.as_str()).collect::<Vec<_>>().join(", ");
-    let cover_id = track.album.covers.iter().max_by_key(|cover| cover.width.saturating_mul(cover.height)).map(|cover| cover.id.to_string());
+    let artist = track
+        .artists
+        .iter()
+        .map(|artist| artist.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cover_id = track
+        .album
+        .covers
+        .iter()
+        .max_by_key(|cover| cover.width.saturating_mul(cover.height))
+        .map(|cover| cover.id.to_string());
     let version = (!track.version_title.trim().is_empty()).then(|| track.version_title.clone());
 
     Ok(QueueItem {
-        title: track.name.clone(), artist, album: track.album.name.clone(), version,
-        uri: uri.to_string(), duration_ms: track.duration.max(0) as u32, cover_id, match_score: None,
+        title: track.name.clone(),
+        artist,
+        album: track.album.name.clone(),
+        version,
+        uri: uri.to_string(),
+        duration_ms: track.duration.max(0) as u32,
+        cover_id,
+        match_score: None,
     })
 }
 
@@ -275,18 +332,25 @@ fn request_artwork(
         }
         {
             let mut pending = pending.lock().await;
-            if !pending.insert(cover_id.clone()) { return; }
+            if !pending.insert(cover_id.clone()) {
+                return;
+            }
         }
         let loaded = async {
             let file_id = file_id_from_hex(&cover_id)?;
-            let bytes = session.spclient().get_image(&file_id).await.map_err(|err| format!("could not download album artwork: {err}"))?;
+            let bytes = session
+                .spclient()
+                .get_image(&file_id)
+                .await
+                .map_err(|err| format!("could not download album artwork: {err}"))?;
             let bytes = bytes.to_vec();
             tokio::task::spawn_blocking(move || image::load_from_memory(&bytes))
                 .await
                 .map_err(|err| format!("album artwork decoder task failed: {err}"))?
                 .map(Arc::new)
                 .map_err(|err| format!("could not decode album artwork: {err}"))
-        }.await;
+        }
+        .await;
         pending.lock().await.remove(&cover_id);
         if let Ok(image) = loaded {
             cache.lock().await.insert(cover_id, image.clone());
@@ -304,42 +368,70 @@ fn request_lyrics(
 ) {
     tokio::spawn(async move {
         if let Some((provider, lines)) = cache.lock().await.get(&uri).cloned() {
-            let _ = updates.send(PlayerUpdate::Lyrics { uri, provider, lines });
+            let _ = updates.send(PlayerUpdate::Lyrics {
+                uri,
+                provider,
+                lines,
+            });
             return;
         }
         {
             let mut pending = pending.lock().await;
-            if !pending.insert(uri.clone()) { return; }
+            if !pending.insert(uri.clone()) {
+                return;
+            }
         }
         let result = async {
-            let spotify_uri = SpotifyUri::from_uri(&uri).map_err(|err| format!("invalid track URI for lyrics: {err}"))?;
-            let spotify_id = SpotifyId::try_from(&spotify_uri).map_err(|err| format!("invalid track ID for lyrics: {err}"))?;
-            let lyrics = Lyrics::get(&session, &spotify_id).await.map_err(|err| format!("lyrics unavailable: {err}"))?;
+            let spotify_uri = SpotifyUri::from_uri(&uri)
+                .map_err(|err| format!("invalid track URI for lyrics: {err}"))?;
+            let spotify_id = SpotifyId::try_from(&spotify_uri)
+                .map_err(|err| format!("invalid track ID for lyrics: {err}"))?;
+            let lyrics = Lyrics::get(&session, &spotify_id)
+                .await
+                .map_err(|err| format!("lyrics unavailable: {err}"))?;
             let provider = lyrics.lyrics.provider_display_name.clone();
-            let lines = lyrics.lyrics.lines.into_iter().map(|line| LyricsLine {
-                start_ms: line.start_time_ms.parse::<u32>().unwrap_or(0),
-                end_ms: line.end_time_ms.parse::<u32>().unwrap_or(0),
-                text: line.words,
-            }).collect::<Vec<_>>();
+            let lines = lyrics
+                .lyrics
+                .lines
+                .into_iter()
+                .map(|line| LyricsLine {
+                    start_ms: line.start_time_ms.parse::<u32>().unwrap_or(0),
+                    end_ms: line.end_time_ms.parse::<u32>().unwrap_or(0),
+                    text: line.words,
+                })
+                .collect::<Vec<_>>();
             Ok::<_, String>((provider, lines))
-        }.await;
+        }
+        .await;
         pending.lock().await.remove(&uri);
         match result {
             Ok((provider, lines)) => {
-                cache.lock().await.insert(uri.clone(), (provider.clone(), lines.clone()));
-                let _ = updates.send(PlayerUpdate::Lyrics { uri, provider, lines });
+                cache
+                    .lock()
+                    .await
+                    .insert(uri.clone(), (provider.clone(), lines.clone()));
+                let _ = updates.send(PlayerUpdate::Lyrics {
+                    uri,
+                    provider,
+                    lines,
+                });
             }
-            Err(error) => { let _ = updates.send(PlayerUpdate::LyricsError { uri, error }); }
+            Err(error) => {
+                let _ = updates.send(PlayerUpdate::LyricsError { uri, error });
+            }
         }
     });
 }
 
 fn file_id_from_hex(value: &str) -> Result<FileId, String> {
-    if value.len() != 40 || !value.is_ascii() { return Err("invalid Spotify artwork id".to_string()); }
+    if value.len() != 40 || !value.is_ascii() {
+        return Err("invalid Spotify artwork id".to_string());
+    }
     let mut bytes = [0u8; 20];
     for (index, byte) in bytes.iter_mut().enumerate() {
         let start = index * 2;
-        *byte = u8::from_str_radix(&value[start..start + 2], 16).map_err(|_| "invalid Spotify artwork id".to_string())?;
+        *byte = u8::from_str_radix(&value[start..start + 2], 16)
+            .map_err(|_| "invalid Spotify artwork id".to_string())?;
     }
     Ok(FileId::from_raw(&bytes))
 }
@@ -347,24 +439,37 @@ fn file_id_from_hex(value: &str) -> Result<FileId, String> {
 fn session_parts() -> Result<(SessionConfig, Cache, Credentials), String> {
     let cache_dir = platform::spotify_cache_dir()?;
     let files_dir = cache_dir.join("files");
-    fs::create_dir_all(&files_dir).map_err(|err| format!("could not create Spotify cache directory: {err}"))?;
+    fs::create_dir_all(&files_dir)
+        .map_err(|err| format!("could not create Spotify cache directory: {err}"))?;
     platform::secure_cache_dir(&cache_dir)?;
     let session_config = SessionConfig::default();
-    let cache = Cache::new(Some(cache_dir.clone()), Some(cache_dir), Some(files_dir), None)
-        .map_err(|err| format!("could not initialize Spotify cache: {err}"))?;
-    let credentials = match cache.credentials() { Some(credentials) => credentials, None => oauth_credentials(&session_config)? };
+    let cache = Cache::new(
+        Some(cache_dir.clone()),
+        Some(cache_dir),
+        Some(files_dir),
+        None,
+    )
+    .map_err(|err| format!("could not initialize Spotify cache: {err}"))?;
+    let credentials = match cache.credentials() {
+        Some(credentials) => credentials,
+        None => oauth_credentials(&session_config)?,
+    };
     Ok((session_config, cache, credentials))
 }
 
 fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
-    OAuthClientBuilder::new(&session_config.client_id, OAUTH_REDIRECT_URI, OAUTH_SCOPES.to_vec())
-        .open_in_browser()
-        .with_custom_message("Riff is connected. You can close this tab and return to the terminal.")
-        .build()
-        .map_err(|err| format!("could not initialize Spotify OAuth: {err}"))?
-        .get_access_token()
-        .map(|token| Credentials::with_access_token(token.access_token))
-        .map_err(|err| format!("Spotify authorization failed: {err}"))
+    OAuthClientBuilder::new(
+        &session_config.client_id,
+        OAUTH_REDIRECT_URI,
+        OAUTH_SCOPES.to_vec(),
+    )
+    .open_in_browser()
+    .with_custom_message("Riff is connected. You can close this tab and return to the terminal.")
+    .build()
+    .map_err(|err| format!("could not initialize Spotify OAuth: {err}"))?
+    .get_access_token()
+    .map(|token| Credentials::with_access_token(token.access_token))
+    .map_err(|err| format!("Spotify authorization failed: {err}"))
 }
 
 #[cfg(test)]

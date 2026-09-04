@@ -144,10 +144,14 @@ pub struct LyricsState {
 
 impl LyricsState {
     pub fn active_line(&self, position_ms: u32) -> Option<usize> {
-        self.lines.iter().enumerate().rev().find_map(|(index, line)| {
-            (position_ms >= line.start_ms && (line.end_ms == 0 || position_ms < line.end_ms))
-                .then_some(index)
-        })
+        self.lines
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, line)| {
+                (position_ms >= line.start_ms && (line.end_ms == 0 || position_ms < line.end_ms))
+                    .then_some(index)
+            })
     }
 }
 

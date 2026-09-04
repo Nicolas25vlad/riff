@@ -31,7 +31,8 @@ fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
         .output()
         .ok()?;
 
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    })
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
