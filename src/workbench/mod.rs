@@ -646,7 +646,12 @@ fn handle_mouse(
             if workbench.state.view == View::Search {
                 workbench.state.search.move_up();
                 request_selected_search_artwork(workbench, controls);
-            } else {
+            } else if workbench
+                .state
+                .hits
+                .volume
+                .is_some_and(|rect| contains(rect, point))
+            {
                 let _ = controls.send(Control::VolumeUp);
             }
         }
@@ -654,7 +659,12 @@ fn handle_mouse(
             if workbench.state.view == View::Search {
                 workbench.state.search.move_down();
                 request_selected_search_artwork(workbench, controls);
-            } else {
+            } else if workbench
+                .state
+                .hits
+                .volume
+                .is_some_and(|rect| contains(rect, point))
+            {
                 let _ = controls.send(Control::VolumeDown);
             }
         }
