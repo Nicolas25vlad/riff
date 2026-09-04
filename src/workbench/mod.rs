@@ -56,7 +56,7 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     if playlist.tracks.is_empty() {
         return Err("playlist has no tracks to play".to_string());
     }
-    let queue = player_task::resolve_queue(&playlist).await?;
+    let queue = resolve_queue_with_startup(&playlist).await?;
     let editor = EditorState::load(&file_path)?;
     let file_name = file_path
         .file_name()
@@ -118,6 +118,76 @@ impl Drop for TerminalModeGuard {
             let _ = disable_raw_mode();
         }
     }
+}
+
+async fn resolve_queue_with_startup(playlist: &Playlist) -> Result<Vec<QueueItem>, String> {
+    enable_raw_mode().map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
+    let mut terminal_mode = TerminalModeGuard {
+        raw_enabled: true,
+        alternate_enabled: false,
+    };
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .map_err(|error| format!("could not enter startup screen: {error}"))?;
+    terminal_mode.alternate_enabled = true;
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)
+        .map_err(|error| format!("could not initialize startup screen: {error}"))?;
+    terminal
+        .clear()
+        .map_err(|error| format!("could not clear startup screen: {error}"))?;
+
+    let mut resolving = Box::pin(player_task::resolve_queue(playlist));
+    let mut ticker = tokio::time::interval(Duration::from_millis(90));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let mut spinner_index = 0usize;
+
+    let result = loop {
+        terminal
+            .draw(|frame| draw_startup(frame, playlist.tracks.len(), spinner[spinner_index]))
+            .map_err(|error| format!("could not render startup screen: {error}"))?;
+        tokio::select! {
+            result = &mut resolving => break result,
+            _ = ticker.tick() => spinner_index = (spinner_index + 1) % spinner.len(),
+        }
+    };
+
+    let cursor_result = terminal
+        .show_cursor()
+        .map_err(|error| format!("could not restore cursor: {error}"));
+    drop(terminal_mode);
+    cursor_result?;
+    result
+}
+
+fn draw_startup(frame: &mut Frame<'_>, track_count: usize, spinner: &str) {
+    let area = frame.area();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Length(6),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    frame.render_widget(Block::default().borders(Borders::ALL).title(" RIFF "), area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!("{spinner}  Preparing Workbench"),
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("Connecting to Spotify and resolving playlist metadata…"),
+            Line::from(format!(
+                "{track_count} track(s) · cache hits are reused automatically"
+            )),
+        ])
+        .alignment(Alignment::Center),
+        rows[1],
+    );
 }
 
 async fn run_terminal(
@@ -290,6 +360,50 @@ fn render_artwork(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalAction {
+    NextView,
+    PreviousView,
+    CycleTheme,
+    Quit,
+    TogglePlayback,
+    NextTrack,
+    PreviousTrack,
+    VolumeUp,
+    VolumeDown,
+    SeekForward,
+    SeekBackward,
+    ToggleShuffle,
+    ToggleRepeat,
+    OpenSearch,
+    OpenEditor,
+    OpenLyrics,
+}
+
+fn global_action_for_key(key: &KeyEvent) -> Option<GlobalAction> {
+    match key.code {
+        KeyCode::Tab => Some(GlobalAction::NextView),
+        KeyCode::BackTab => Some(GlobalAction::PreviousView),
+        KeyCode::F(6) => Some(GlobalAction::CycleTheme),
+        KeyCode::Char('q') | KeyCode::Esc => Some(GlobalAction::Quit),
+        KeyCode::Char(' ') => Some(GlobalAction::TogglePlayback),
+        KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right => Some(GlobalAction::NextTrack),
+        KeyCode::Char('p') | KeyCode::Char('h') | KeyCode::Left => {
+            Some(GlobalAction::PreviousTrack)
+        }
+        KeyCode::Char('+') | KeyCode::Char('=') => Some(GlobalAction::VolumeUp),
+        KeyCode::Char('-') => Some(GlobalAction::VolumeDown),
+        KeyCode::Char(']') => Some(GlobalAction::SeekForward),
+        KeyCode::Char('[') => Some(GlobalAction::SeekBackward),
+        KeyCode::Char('s') => Some(GlobalAction::ToggleShuffle),
+        KeyCode::Char('r') => Some(GlobalAction::ToggleRepeat),
+        KeyCode::Char('/') => Some(GlobalAction::OpenSearch),
+        KeyCode::Char('e') => Some(GlobalAction::OpenEditor),
+        KeyCode::Char('y') => Some(GlobalAction::OpenLyrics),
+        _ => None,
+    }
+}
+
 fn handle_key(
     workbench: &mut Workbench,
     key: KeyEvent,
@@ -314,44 +428,44 @@ fn handle_key(
         return Ok(false);
     }
 
-    match key.code {
-        KeyCode::Tab => workbench.state.view = workbench.state.view.next(),
-        KeyCode::BackTab => workbench.state.view = workbench.state.view.previous(),
-        KeyCode::F(6) => {
+    let Some(action) = global_action_for_key(&key) else {
+        return Ok(false);
+    };
+    match action {
+        GlobalAction::NextView => workbench.state.view = workbench.state.view.next(),
+        GlobalAction::PreviousView => workbench.state.view = workbench.state.view.previous(),
+        GlobalAction::CycleTheme => {
             workbench.state.theme = workbench.state.theme.next();
             workbench.state.message = format!("theme · {}", workbench.state.theme.name);
         }
-        KeyCode::Char('q') | KeyCode::Esc => {
+        GlobalAction::Quit => {
             let _ = controls.send(Control::Quit);
             return Ok(true);
         }
-        KeyCode::Char(' ') => {
+        GlobalAction::TogglePlayback => {
             let _ = controls.send(Control::Toggle);
         }
-        KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right => {
+        GlobalAction::NextTrack => {
             let _ = controls.send(Control::Next);
         }
-        KeyCode::Char('p') | KeyCode::Char('h') | KeyCode::Left => {
+        GlobalAction::PreviousTrack => {
             let _ = controls.send(Control::Previous);
         }
-        KeyCode::Char('+') | KeyCode::Char('=') => {
-            adjust_volume(workbench, VOLUME_STEP_PERCENT as i16, controls)
+        GlobalAction::VolumeUp => adjust_volume(workbench, VOLUME_STEP_PERCENT as i16, controls),
+        GlobalAction::VolumeDown => {
+            adjust_volume(workbench, -(VOLUME_STEP_PERCENT as i16), controls)
         }
-        KeyCode::Char('-') => adjust_volume(workbench, -(VOLUME_STEP_PERCENT as i16), controls),
-        KeyCode::Char(']') => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
-        KeyCode::Char('[') => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
-        KeyCode::Char('s') => {
-            let enabled = !workbench.state.shuffle;
-            let _ = controls.send(Control::Shuffle(enabled));
+        GlobalAction::SeekForward => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
+        GlobalAction::SeekBackward => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
+        GlobalAction::ToggleShuffle => {
+            let _ = controls.send(Control::Shuffle(!workbench.state.shuffle));
         }
-        KeyCode::Char('r') => {
-            let enabled = !workbench.state.repeat;
-            let _ = controls.send(Control::Repeat(enabled));
+        GlobalAction::ToggleRepeat => {
+            let _ = controls.send(Control::Repeat(!workbench.state.repeat));
         }
-        KeyCode::Char('/') => workbench.state.view = View::Search,
-        KeyCode::Char('e') => workbench.state.view = View::Editor,
-        KeyCode::Char('y') => workbench.state.view = View::Lyrics,
-        _ => {}
+        GlobalAction::OpenSearch => workbench.state.view = View::Search,
+        GlobalAction::OpenEditor => workbench.state.view = View::Editor,
+        GlobalAction::OpenLyrics => workbench.state.view = View::Lyrics,
     }
     Ok(false)
 }
@@ -1363,7 +1477,7 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
         View::Search => " Enter search/play · ↑↓ select · Ctrl+A add · Ctrl+P play · Esc back ",
         View::Editor => " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ",
         _ => {
-            " Tab views · Space play/pause · h/l prev/next · +/- volume · [/] seek · s shuffle · r repeat · F6 theme · q quit "
+            " Tab/Shift+Tab views · Space play/pause · h/l track · +/- volume 5% · [/] seek 5s · / search · e editor · y lyrics · q quit "
         }
     };
     frame.render_widget(
@@ -1386,6 +1500,22 @@ mod tests {
     #[test]
     fn formats_transport_time() {
         assert_eq!(format_duration(475_000), "7:55");
+    }
+
+    #[test]
+    fn global_keys_map_to_semantic_actions() {
+        let play = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        let search = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
+        let louder = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE);
+        assert_eq!(
+            global_action_for_key(&play),
+            Some(GlobalAction::TogglePlayback)
+        );
+        assert_eq!(
+            global_action_for_key(&search),
+            Some(GlobalAction::OpenSearch)
+        );
+        assert_eq!(global_action_for_key(&louder), Some(GlobalAction::VolumeUp));
     }
 
     #[test]

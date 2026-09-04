@@ -9,6 +9,7 @@ async fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.first().is_some_and(|arg| arg == "tui") {
+        riff::player::init_tui_logging();
         let Some(path) = args.get(1) else {
             eprintln!("riff: tui requires a .riff playlist\n\nUSAGE:\n  riff tui <file.riff>");
             process::exit(1);

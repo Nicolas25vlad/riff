@@ -1,11 +1,15 @@
-use std::{collections::BTreeMap, fs};
+use std::{
+    collections::BTreeMap,
+    env,
+    fs::{self, OpenOptions},
+};
 
 use crate::{
     fuzzy::{DEFAULT_THRESHOLD, rank_candidates},
     platform,
     resolution_cache::ResolutionCache,
 };
-use env_logger::Env;
+use env_logger::{Env, Target};
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
     core::{
@@ -381,6 +385,29 @@ fn spotify_search_uri(query: &str) -> String {
 pub fn init_cli_logging() {
     let env = Env::default().filter_or("RIFF_LOG", "riff=info,librespot=info");
     let _ = env_logger::Builder::from_env(env).try_init();
+}
+
+pub fn init_tui_logging() {
+    if env::var_os("RIFF_LOG").is_none() {
+        return;
+    }
+    let Ok(cache_dir) = platform::riff_cache_dir() else {
+        return;
+    };
+    if fs::create_dir_all(&cache_dir).is_err() {
+        return;
+    }
+    let Ok(file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(cache_dir.join("riff-tui.log"))
+    else {
+        return;
+    };
+    let env = Env::default().filter_or("RIFF_LOG", "riff=debug,librespot=info");
+    let _ = env_logger::Builder::from_env(env)
+        .target(Target::Pipe(Box::new(file)))
+        .try_init();
 }
 
 fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {

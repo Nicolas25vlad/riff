@@ -32,6 +32,9 @@ for name, block in [('scroll up', up), ('scroll down', down)]:
     assert '.volume' in block and 'contains(rect, point)' in block, f'{name} may change volume only when hovering the volume control'
 PY
 
+grep -q 'enum GlobalAction' src/workbench/mod.rs || fail 'Workbench global keys must map through semantic actions.'
+grep -q 'init_tui_logging' src/main.rs || fail 'TUI debug logging must be initialized through the safe file logger.'
+
 cargo test --bin riff workbench::tests -- --nocapture
 
 echo 'TUI quality invariants passed.'
