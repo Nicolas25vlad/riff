@@ -36,7 +36,7 @@ jobs:
           from pathlib import Path
           p = Path('src/lib.rs')
           s = p.read_text()
-          marker = '    #[test]\n    fn parses_init_default()'
+          marker = '    #[test]\n    fn parses_minimal_playlist()'
           test = '    #[test]\n    fn help_mentions_tui() {\n        assert!(help().contains("tui <file>"));\n    }\n\n'
           if 'fn help_mentions_tui()' not in s:
               if marker not in s:
