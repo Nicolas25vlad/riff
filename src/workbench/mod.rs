@@ -4,7 +4,13 @@ mod model;
 mod player_task;
 mod theme;
 
-use std::{collections::HashMap, fs, io, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs, io,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crossterm::{
     event::{
@@ -36,6 +42,8 @@ const WIDE_ART_SIZE: Size = Size::new(28, 14);
 const COMPACT_ART_SIZE: Size = Size::new(18, 9);
 const SEARCH_ART_SIZE: Size = Size::new(22, 11);
 const VOLUME_MAX: u16 = u16::MAX;
+const VOLUME_STEP_PERCENT: i16 = 5;
+const VOLUME_SEND_INTERVAL: Duration = Duration::from_millis(60);
 const SEEK_STEP_MS: u32 = 5_000;
 
 struct RenderedArtwork {
@@ -49,6 +57,8 @@ struct Workbench {
     editor: EditorState,
     artwork: HashMap<String, RenderedArtwork>,
     artwork_pending: HashMap<String, bool>,
+    pending_volume: Option<u16>,
+    last_volume_send: Instant,
 }
 
 pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
@@ -96,6 +106,8 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         editor,
         artwork: HashMap::new(),
         artwork_pending: HashMap::new(),
+        pending_volume: None,
+        last_volume_send: Instant::now() - VOLUME_SEND_INTERVAL,
     };
     let ui_result = run_terminal(&mut workbench, control_tx, update_rx).await;
     let _ = player_task.await;
@@ -132,6 +144,7 @@ async fn run_terminal(
                 workbench.artwork.insert(key.clone(), artwork);
                 workbench.artwork_pending.remove(&key);
             }
+            flush_pending_volume(workbench, &controls);
 
             terminal
                 .draw(|frame| draw(frame, workbench))
@@ -309,10 +322,10 @@ fn handle_key(
             let _ = controls.send(Control::Previous);
         }
         KeyCode::Char('+') | KeyCode::Char('=') => {
-            let _ = controls.send(Control::VolumeUp);
+            adjust_volume(workbench, VOLUME_STEP_PERCENT, controls);
         }
         KeyCode::Char('-') => {
-            let _ = controls.send(Control::VolumeDown);
+            adjust_volume(workbench, -VOLUME_STEP_PERCENT, controls);
         }
         KeyCode::Char(']') => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
         KeyCode::Char('[') => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
@@ -620,9 +633,8 @@ fn handle_mouse(
             {
                 if rect.width > 1 {
                     let relative = mouse.column.saturating_sub(rect.x) as f64 / rect.width as f64;
-                    let _ = controls.send(Control::SetVolume(
-                        (VOLUME_MAX as f64 * relative.clamp(0.0, 1.0)) as u16,
-                    ));
+                    let percent = (relative.clamp(0.0, 1.0) * 100.0).round() as u8;
+                    set_volume_percent(workbench, percent, controls);
                 }
             } else if workbench.state.view == View::Search
                 && let Some((index, _)) = workbench
@@ -646,7 +658,7 @@ fn handle_mouse(
                 .volume
                 .is_some_and(|rect| contains(rect, point))
             {
-                let _ = controls.send(Control::VolumeUp);
+                adjust_volume(workbench, VOLUME_STEP_PERCENT, controls);
             }
         }
         MouseEventKind::ScrollDown => {
@@ -659,12 +671,57 @@ fn handle_mouse(
                 .volume
                 .is_some_and(|rect| contains(rect, point))
             {
-                let _ = controls.send(Control::VolumeDown);
+                adjust_volume(workbench, -VOLUME_STEP_PERCENT, controls);
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+fn volume_percent(volume: u16) -> u8 {
+    (((volume as u32 * 100) + (VOLUME_MAX as u32 / 2)) / VOLUME_MAX as u32).min(100) as u8
+}
+
+fn volume_from_percent(percent: u8) -> u16 {
+    (((percent.min(100) as u32 * VOLUME_MAX as u32) + 50) / 100) as u16
+}
+
+fn quantize_volume_percent(percent: u8) -> u8 {
+    let step = VOLUME_STEP_PERCENT as u16;
+    ((((percent.min(100) as u16) + step / 2) / step) * step).min(100) as u8
+}
+
+fn set_volume_percent(
+    workbench: &mut Workbench,
+    percent: u8,
+    controls: &mpsc::UnboundedSender<Control>,
+) {
+    let percent = quantize_volume_percent(percent);
+    let volume = volume_from_percent(percent);
+    workbench.state.volume = volume;
+    workbench.pending_volume = Some(volume);
+    flush_pending_volume(workbench, controls);
+}
+
+fn adjust_volume(
+    workbench: &mut Workbench,
+    delta_percent: i16,
+    controls: &mpsc::UnboundedSender<Control>,
+) {
+    let current = quantize_volume_percent(volume_percent(workbench.state.volume)) as i16;
+    let target = (current + delta_percent).clamp(0, 100) as u8;
+    set_volume_percent(workbench, target, controls);
+}
+
+fn flush_pending_volume(workbench: &mut Workbench, controls: &mpsc::UnboundedSender<Control>) {
+    if workbench.last_volume_send.elapsed() < VOLUME_SEND_INTERVAL {
+        return;
+    }
+    if let Some(volume) = workbench.pending_volume.take() {
+        let _ = controls.send(Control::SetVolume(volume));
+        workbench.last_volume_send = Instant::now();
+    }
 }
 
 fn contains(rect: Rect, point: (u16, u16)) -> bool {
@@ -1274,11 +1331,12 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
         Paragraph::new(flags).style(Style::default().fg(theme.muted)),
         top[3],
     );
-    let volume_ratio = workbench.state.volume as f64 / VOLUME_MAX as f64;
+    let volume_percent = volume_percent(workbench.state.volume);
+    let volume_ratio = volume_percent as f64 / 100.0;
     frame.render_widget(
         Gauge::default()
             .ratio(volume_ratio)
-            .label(format!("vol {:>3}%", (volume_ratio * 100.0).round() as u8)),
+            .label(format!("vol {volume_percent:>3}%")),
         top[4],
     );
     workbench.state.hits.volume = Some(top[4]);
@@ -1352,5 +1410,23 @@ mod tests {
         assert!(contains(rect, (10, 10)));
         assert!(contains(rect, (14, 14)));
         assert!(!contains(rect, (15, 14)));
+    }
+
+    #[test]
+    fn volume_percent_round_trips_expected_steps() {
+        for percent in (0..=100).step_by(5) {
+            assert_eq!(volume_percent(volume_from_percent(percent)), percent);
+        }
+    }
+
+    #[test]
+    fn volume_quantization_uses_five_percent_steps() {
+        assert_eq!(quantize_volume_percent(0), 0);
+        assert_eq!(quantize_volume_percent(2), 0);
+        assert_eq!(quantize_volume_percent(3), 5);
+        assert_eq!(quantize_volume_percent(72), 70);
+        assert_eq!(quantize_volume_percent(73), 75);
+        assert_eq!(quantize_volume_percent(99), 100);
+        assert_eq!(quantize_volume_percent(100), 100);
     }
 }
