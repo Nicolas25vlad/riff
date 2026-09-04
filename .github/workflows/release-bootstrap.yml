@@ -1,0 +1,30 @@
+name: Bootstrap v0.6.0 Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-bootstrap.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v0.6.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.6.0 already exists; nothing to do."
+            exit 0
+          fi
+          gh release create v0.6.0 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target 598647d41c5256cea9d76d60e0683459f90ada7e \
+            --title "Riff v0.6.0 — Workbench" \
+            --generate-notes \
+            --notes-start-tag ""
