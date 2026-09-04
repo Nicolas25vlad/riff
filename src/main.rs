@@ -1,8 +1,8 @@
-use std::{env, fs, process};
+use std::{env, fs, path::PathBuf, process};
 
 use riff::{Command, Playlist, run};
 
-mod tui;
+mod workbench;
 
 #[tokio::main]
 async fn main() {
@@ -18,7 +18,8 @@ async fn main() {
             process::exit(1);
         }
 
-        let source = match fs::read_to_string(path) {
+        let path = PathBuf::from(path);
+        let source = match fs::read_to_string(&path) {
             Ok(source) => source,
             Err(err) => {
                 eprintln!("riff: {err}");
@@ -33,7 +34,7 @@ async fn main() {
             }
         };
 
-        if let Err(err) = tui::run(playlist).await {
+        if let Err(err) = workbench::run(path, playlist).await {
             eprintln!("riff: tui error: {err}");
             process::exit(1);
         }
