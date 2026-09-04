@@ -1,0 +1,74 @@
+name: Package Check
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'packaging/**'
+      - '.github/workflows/package-check.yml'
+      - '.github/workflows/publish-packages.yml'
+      - 'RELEASING.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-package:
+    name: crates.io package dry run
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate crate package
+        run: cargo publish --dry-run
+
+  aur-package:
+    name: AUR metadata dry run
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 15
+    steps:
+      - name: Install tools
+        run: pacman -Syu --noconfirm git
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Render PKGBUILD
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          test -n "$version"
+          zero_sha=$(printf '0%.0s' {1..64})
+          sed \
+            -e "s/@VERSION@/${version}/g" \
+            -e "s/@SHA256@/${zero_sha}/g" \
+            packaging/aur/PKGBUILD.template > packaging/aur/PKGBUILD
+          bash -n packaging/aur/PKGBUILD
+
+      - name: Generate SRCINFO
+        shell: bash
+        run: |
+          set -euo pipefail
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- bash -lc "cd '$GITHUB_WORKSPACE/packaging/aur' && makepkg --printsrcinfo > .SRCINFO"
+          test -s packaging/aur/.SRCINFO
+          cat packaging/aur/.SRCINFO
