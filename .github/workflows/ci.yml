@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -12,6 +17,7 @@ jobs:
   quality:
     name: Linux quality
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,14 +46,35 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --all-features
+        run: cargo test --all-features --no-fail-fast
 
       - name: Check
         run: cargo check --all-targets --all-features
 
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          cargo build --all-features
+          ./target/debug/riff --version
+          ./target/debug/riff validate examples/coding-metal.riff
+          ./target/debug/riff inspect examples/coding-metal.riff
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Linux quality'
+            echo
+            echo '- Commit: `${{ github.sha }}`'
+            echo '- Rust: `stable`'
+            echo '- Checks: fmt, clippy, tests, cargo check, CLI smoke test'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   windows:
     name: Windows 11 compatible build
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,7 +98,27 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --all-features
+        run: cargo test --all-features --no-fail-fast
 
       - name: Check
         run: cargo check --all-targets --all-features
+
+      - name: CLI smoke test
+        shell: pwsh
+        run: |
+          cargo build --all-features
+          .\target\debug\riff.exe --version
+          .\target\debug\riff.exe validate examples\coding-metal.riff
+          .\target\debug\riff.exe inspect examples\coding-metal.riff
+
+      - name: Write job summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ## Windows quality
+
+          - Commit: `${{ github.sha }}`
+          - Rust: `stable`
+          - Checks: fmt, clippy, tests, cargo check, CLI smoke test
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY
