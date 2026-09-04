@@ -13,6 +13,7 @@ pub struct QueueItem {
     pub uri: String,
     pub duration_ms: u32,
     pub cover_id: Option<String>,
+    pub match_score: Option<u8>,
 }
 
 impl QueueItem {
@@ -102,6 +103,7 @@ impl View {
 #[derive(Debug, Clone, Default)]
 pub struct SearchState {
     pub query: String,
+    pub submitted_query: String,
     pub results: Vec<QueueItem>,
     pub selected: usize,
     pub searching: bool,
