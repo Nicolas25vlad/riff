@@ -172,6 +172,7 @@ pub struct AppState {
     pub file_name: String,
     pub playlist_name: String,
     pub queue: Vec<QueueItem>,
+    pub transient_current: Option<QueueItem>,
     pub status: PlaybackStatus,
     pub current_uri: Option<String>,
     pub position_ms: u32,
@@ -194,7 +195,12 @@ impl AppState {
     }
 
     pub fn current(&self) -> Option<&QueueItem> {
-        self.current_index().and_then(|index| self.queue.get(index))
+        let uri = self.current_uri.as_deref()?;
+        self.queue.iter().find(|item| item.uri == uri).or_else(|| {
+            self.transient_current
+                .as_ref()
+                .filter(|item| item.uri == uri)
+        })
     }
 
     pub fn duration_ms(&self) -> u32 {

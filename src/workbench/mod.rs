@@ -73,6 +73,7 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         file_name,
         playlist_name: playlist.name,
         queue: queue.clone(),
+        transient_current: None,
         status: PlaybackStatus::Starting,
         current_uri: None,
         position_ms: 0,
@@ -181,6 +182,9 @@ fn apply_player_update(
             let changed = workbench.state.current_uri.as_deref() != Some(uri.as_str());
             workbench.state.current_uri = Some(uri.clone());
             workbench.state.position_ms = position_ms;
+            if workbench.state.queue.iter().any(|item| item.uri == uri) {
+                workbench.state.transient_current = None;
+            }
             if changed {
                 workbench.state.lyrics = LyricsState {
                     track_uri: Some(uri.clone()),
@@ -455,7 +459,9 @@ fn submit_search(workbench: &mut Workbench, controls: &mpsc::UnboundedSender<Con
 }
 
 fn play_selected_search(workbench: &mut Workbench, controls: &mpsc::UnboundedSender<Control>) {
-    if let Some(item) = workbench.state.search.selected() {
+    if let Some(item) = workbench.state.search.selected().cloned() {
+        workbench.state.transient_current = Some(item.clone());
+        request_item_artwork(workbench, &item, controls);
         let _ = controls.send(Control::PlayUri(item.uri.clone()));
         workbench.state.message = format!("playing search result · {}", item.label());
     }
