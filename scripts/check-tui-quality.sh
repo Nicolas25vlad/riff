@@ -20,6 +20,7 @@ if grep -RIn 'env_logger' src/workbench --include='*.rs'; then
   fail 'Workbench must not initialize env_logger directly.'
 fi
 
+# Mouse wheel actions are contextual: Search navigates, volume only changes over its gauge.
 python - <<'PY'
 from pathlib import Path
 
