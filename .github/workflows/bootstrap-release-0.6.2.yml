@@ -1,0 +1,71 @@
+name: Bootstrap Riff v0.6.2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/bootstrap-release-0.6.2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          test "$version" = "0.6.2"
+          git cat-file -e bc64fb9c9e331d41052bdef7911109dc6796d7f2^{commit}
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v0.6.2 >/dev/null 2>&1; then
+            echo '::error::GitHub Release v0.6.2 already exists.'
+            exit 1
+          fi
+
+          cat > /tmp/release-notes.md <<'EOF'
+          Small polish release before the next feature batch.
+
+          ### Changed
+          - refreshed README and installation docs around the current Workbench and crates.io package
+          - exposed the primary `riff tui <file>` command in `riff help`
+          - added a regression test so the Workbench command cannot silently disappear from CLI help
+          - added a project CHANGELOG as the release-history source of truth
+
+          ### Install / upgrade
+          ```bash
+          cargo install riff-music --force
+          ```
+
+          Spotify playback requires Spotify Premium.
+          EOF
+
+          gh release create v0.6.2 \
+            --target bc64fb9c9e331d41052bdef7911109dc6796d7f2 \
+            --title 'Riff v0.6.2' \
+            --notes-file /tmp/release-notes.md
+
+      - name: Remove bootstrap workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/bootstrap-release-0.6.2.yml
+          git commit -m 'chore(release): remove v0.6.2 bootstrap'
+          git push origin HEAD:main
