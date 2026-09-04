@@ -2,8 +2,11 @@ name: Patch v0.7 volume stability
 
 on:
   push:
-    branches: [fix/v07-volume-stability]
-    paths: [.github/workflows/patch-v07-volume.yml]
+    branches:
+      - fix/v07-volume-stability
+    paths:
+      - scripts/patch_v07_volume.py
+      - .github/workflows/patch-v07-volume.yml
 
 permissions:
   contents: write
@@ -12,169 +15,16 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout branch
+        uses: actions/checkout@v4
         with:
           ref: fix/v07-volume-stability
-      - name: Apply volume stability changes
-        shell: bash
+      - name: Apply patch
+        run: python3 scripts/patch_v07_volume.py
+      - name: Format and cleanup
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              if old not in text:
-                  raise SystemExit(f"pattern not found in {path}: {old[:100]!r}")
-              p.write_text(text.replace(old, new, 1))
-
-          replace(
-              "src/workbench/mod.rs",
-              "use std::{collections::HashMap, fs, io, path::PathBuf, sync::Arc, time::Duration};",
-              "use std::{\n    collections::HashMap,\n    fs, io,\n    path::PathBuf,\n    sync::Arc,\n    time::{Duration, Instant},\n};",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "const VOLUME_MAX: u16 = u16::MAX;\nconst SEEK_STEP_MS: u32 = 5_000;",
-              "const VOLUME_MAX: u16 = u16::MAX;\nconst VOLUME_STEP_PERCENT: i16 = 5;\nconst VOLUME_SEND_INTERVAL: Duration = Duration::from_millis(60);\nconst SEEK_STEP_MS: u32 = 5_000;",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "    artwork_pending: HashMap<String, bool>,\n}",
-              "    artwork_pending: HashMap<String, bool>,\n    pending_volume: Option<u16>,\n    last_volume_send: Instant,\n}",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "        artwork_pending: HashMap::new(),\n    };",
-              "        artwork_pending: HashMap::new(),\n        pending_volume: None,\n        last_volume_send: Instant::now() - VOLUME_SEND_INTERVAL,\n    };",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "            while let Ok((key, artwork)) = art_rx.try_recv() {\n                workbench.artwork.insert(key.clone(), artwork);\n                workbench.artwork_pending.remove(&key);\n            }\n\n            terminal",
-              "            while let Ok((key, artwork)) = art_rx.try_recv() {\n                workbench.artwork.insert(key.clone(), artwork);\n                workbench.artwork_pending.remove(&key);\n            }\n            flush_pending_volume(workbench, &controls);\n\n            terminal",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "        KeyCode::Char('+') | KeyCode::Char('=') => {\n            let _ = controls.send(Control::VolumeUp);\n        }\n        KeyCode::Char('-') => {\n            let _ = controls.send(Control::VolumeDown);\n        }",
-              "        KeyCode::Char('+') | KeyCode::Char('=') => {\n            adjust_volume(workbench, VOLUME_STEP_PERCENT, controls);\n        }\n        KeyCode::Char('-') => {\n            adjust_volume(workbench, -VOLUME_STEP_PERCENT, controls);\n        }",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "                if rect.width > 1 {\n                    let relative = mouse.column.saturating_sub(rect.x) as f64 / rect.width as f64;\n                    let _ = controls.send(Control::SetVolume(\n                        (VOLUME_MAX as f64 * relative.clamp(0.0, 1.0)) as u16,\n                    ));\n                }",
-              "                if rect.width > 1 {\n                    let relative = mouse.column.saturating_sub(rect.x) as f64 / rect.width as f64;\n                    let percent = (relative.clamp(0.0, 1.0) * 100.0).round() as u8;\n                    set_volume_percent(workbench, percent, controls);\n                }",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "                let _ = controls.send(Control::VolumeUp);",
-              "                adjust_volume(workbench, VOLUME_STEP_PERCENT, controls);",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "                let _ = controls.send(Control::VolumeDown);",
-              "                adjust_volume(workbench, -VOLUME_STEP_PERCENT, controls);",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "fn contains(rect: Rect, point: (u16, u16)) -> bool {",
-              '''fn volume_percent(volume: u16) -> u8 {
-    (((volume as u32 * 100) + (VOLUME_MAX as u32 / 2)) / VOLUME_MAX as u32)
-        .min(100) as u8
-}
-
-fn volume_from_percent(percent: u8) -> u16 {
-    (((percent.min(100) as u32 * VOLUME_MAX as u32) + 50) / 100) as u16
-}
-
-fn quantize_volume_percent(percent: u8) -> u8 {
-    let step = VOLUME_STEP_PERCENT as u16;
-    ((((percent.min(100) as u16) + step / 2) / step) * step).min(100) as u8
-}
-
-fn set_volume_percent(
-    workbench: &mut Workbench,
-    percent: u8,
-    controls: &mpsc::UnboundedSender<Control>,
-) {
-    let percent = quantize_volume_percent(percent);
-    let volume = volume_from_percent(percent);
-    workbench.state.volume = volume;
-    workbench.pending_volume = Some(volume);
-    flush_pending_volume(workbench, controls);
-}
-
-fn adjust_volume(
-    workbench: &mut Workbench,
-    delta_percent: i16,
-    controls: &mpsc::UnboundedSender<Control>,
-) {
-    let current = quantize_volume_percent(volume_percent(workbench.state.volume)) as i16;
-    let target = (current + delta_percent).clamp(0, 100) as u8;
-    set_volume_percent(workbench, target, controls);
-}
-
-fn flush_pending_volume(
-    workbench: &mut Workbench,
-    controls: &mpsc::UnboundedSender<Control>,
-) {
-    if workbench.last_volume_send.elapsed() < VOLUME_SEND_INTERVAL {
-        return;
-    }
-    if let Some(volume) = workbench.pending_volume.take() {
-        let _ = controls.send(Control::SetVolume(volume));
-        workbench.last_volume_send = Instant::now();
-    }
-}
-
-fn contains(rect: Rect, point: (u16, u16)) -> bool {''',
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "    let volume_ratio = workbench.state.volume as f64 / VOLUME_MAX as f64;\n    frame.render_widget(\n        Gauge::default()\n            .ratio(volume_ratio)\n            .label(format!(\"vol {:>3}%\", (volume_ratio * 100.0).round() as u8)),\n        top[4],\n    );",
-              "    let volume_percent = volume_percent(workbench.state.volume);\n    let volume_ratio = volume_percent as f64 / 100.0;\n    frame.render_widget(\n        Gauge::default()\n            .ratio(volume_ratio)\n            .label(format!(\"vol {volume_percent:>3}%\")),\n        top[4],\n    );",
-          )
-          replace(
-              "src/workbench/mod.rs",
-              "    fn rectangle_hit_test_is_half_open() {\n        let rect = Rect::new(10, 10, 5, 5);\n        assert!(contains(rect, (10, 10)));\n        assert!(contains(rect, (14, 14)));\n        assert!(!contains(rect, (15, 14)));\n    }\n}",
-              '''    fn rectangle_hit_test_is_half_open() {
-        let rect = Rect::new(10, 10, 5, 5);
-        assert!(contains(rect, (10, 10)));
-        assert!(contains(rect, (14, 14)));
-        assert!(!contains(rect, (15, 14)));
-    }
-
-    #[test]
-    fn volume_percent_round_trips_expected_steps() {
-        for percent in (0..=100).step_by(5) {
-            assert_eq!(volume_percent(volume_from_percent(percent)), percent);
-        }
-    }
-
-    #[test]
-    fn volume_quantization_uses_five_percent_steps() {
-        assert_eq!(quantize_volume_percent(0), 0);
-        assert_eq!(quantize_volume_percent(2), 0);
-        assert_eq!(quantize_volume_percent(3), 5);
-        assert_eq!(quantize_volume_percent(72), 70);
-        assert_eq!(quantize_volume_percent(73), 75);
-        assert_eq!(quantize_volume_percent(99), 100);
-        assert_eq!(quantize_volume_percent(100), 100);
-    }
-}''',
-          )
-
-          replace(
-              "src/workbench/player_task.rs",
-              "    VolumeUp,\n    VolumeDown,\n    SetVolume(u16),",
-              "    SetVolume(u16),",
-          )
-          replace(
-              "src/workbench/player_task.rs",
-              "                    Some(Control::VolumeUp) => spirc.volume_up().map_err(|err| format!(\"could not raise volume: {err}\"))?,\n                    Some(Control::VolumeDown) => spirc.volume_down().map_err(|err| format!(\"could not lower volume: {err}\"))?,\n                    Some(Control::SetVolume(volume)) => spirc.set_volume(volume).map_err(|err| format!(\"could not set volume: {err}\"))?,",
-              "                    Some(Control::SetVolume(volume)) => spirc.set_volume(volume).map_err(|err| format!(\"could not set volume: {err}\"))?,",
-          )
-          PY
-
           cargo fmt --all
+          rm scripts/patch_v07_volume.py
           rm .github/workflows/patch-v07-volume.yml
       - name: Commit patch
         run: |
