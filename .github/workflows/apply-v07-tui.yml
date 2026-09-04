@@ -1,0 +1,317 @@
+name: Apply v0.7 TUI UX
+
+on:
+  push:
+    branches: [feat/v0.7-core-polish]
+    paths:
+      - '.github/workflows/apply-v07-tui.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/v0.7-core-polish
+      - name: Apply TUI UX changes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              if old not in s:
+                  raise SystemExit(f'missing pattern in {path}: {old[:120]!r}')
+              p.write_text(s.replace(old, new, 1))
+
+          # TUI debug logs go to a file, never the framebuffer.
+          replace('src/player.rs', 'use std::{collections::BTreeMap, fs};', 'use std::{\n    collections::BTreeMap,\n    env,\n    fs::{self, OpenOptions},\n};')
+          replace('src/player.rs', 'use env_logger::Env;', 'use env_logger::{Env, Target};')
+          replace('src/player.rs', '''pub fn init_cli_logging() {
+              let env = Env::default().filter_or("RIFF_LOG", "riff=info,librespot=info");
+              let _ = env_logger::Builder::from_env(env).try_init();
+          }
+          ''', '''pub fn init_cli_logging() {
+              let env = Env::default().filter_or("RIFF_LOG", "riff=info,librespot=info");
+              let _ = env_logger::Builder::from_env(env).try_init();
+          }
+
+          pub fn init_tui_logging() {
+              if env::var_os("RIFF_LOG").is_none() {
+                  return;
+              }
+              let Ok(cache_dir) = platform::riff_cache_dir() else {
+                  return;
+              };
+              if fs::create_dir_all(&cache_dir).is_err() {
+                  return;
+              }
+              let Ok(file) = OpenOptions::new()
+                  .create(true)
+                  .append(true)
+                  .open(cache_dir.join("riff-tui.log"))
+              else {
+                  return;
+              };
+              let env = Env::default().filter_or("RIFF_LOG", "riff=debug,librespot=info");
+              let _ = env_logger::Builder::from_env(env)
+                  .target(Target::Pipe(Box::new(file)))
+                  .try_init();
+          }
+          ''')
+          replace('src/main.rs', '''    if args.first().is_some_and(|arg| arg == "tui") {
+          ''', '''    if args.first().is_some_and(|arg| arg == "tui") {
+                  riff::player::init_tui_logging();
+          ''')
+
+          # Startup owns the terminal while Spotify metadata/resolution warms up.
+          replace('src/workbench/mod.rs', '    let queue = player_task::resolve_queue(&playlist).await?;', '    let queue = resolve_queue_with_startup(&playlist).await?;')
+          marker = '''impl Drop for TerminalModeGuard {
+              fn drop(&mut self) {
+                  if self.alternate_enabled {
+                      let mut stdout = io::stdout();
+                      let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
+                  }
+                  if self.raw_enabled {
+                      let _ = disable_raw_mode();
+                  }
+              }
+          }
+          '''
+          startup = marker + '''
+          async fn resolve_queue_with_startup(playlist: &Playlist) -> Result<Vec<QueueItem>, String> {
+              enable_raw_mode().map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
+              let mut terminal_mode = TerminalModeGuard {
+                  raw_enabled: true,
+                  alternate_enabled: false,
+              };
+              let mut stdout = io::stdout();
+              execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+                  .map_err(|error| format!("could not enter startup screen: {error}"))?;
+              terminal_mode.alternate_enabled = true;
+
+              let backend = CrosstermBackend::new(stdout);
+              let mut terminal = Terminal::new(backend)
+                  .map_err(|error| format!("could not initialize startup screen: {error}"))?;
+              terminal.clear().map_err(|error| format!("could not clear startup screen: {error}"))?;
+
+              let mut resolving = Box::pin(player_task::resolve_queue(playlist));
+              let mut ticker = tokio::time::interval(Duration::from_millis(90));
+              ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+              let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+              let mut spinner_index = 0usize;
+
+              let result = loop {
+                  terminal
+                      .draw(|frame| draw_startup(frame, playlist.tracks.len(), spinner[spinner_index]))
+                      .map_err(|error| format!("could not render startup screen: {error}"))?;
+                  tokio::select! {
+                      result = &mut resolving => break result,
+                      _ = ticker.tick() => spinner_index = (spinner_index + 1) % spinner.len(),
+                  }
+              };
+
+              let cursor_result = terminal
+                  .show_cursor()
+                  .map_err(|error| format!("could not restore cursor: {error}"));
+              drop(terminal_mode);
+              cursor_result?;
+              result
+          }
+
+          fn draw_startup(frame: &mut Frame<'_>, track_count: usize, spinner: &str) {
+              let area = frame.area();
+              let rows = Layout::default()
+                  .direction(Direction::Vertical)
+                  .constraints([
+                      Constraint::Percentage(35),
+                      Constraint::Length(6),
+                      Constraint::Min(0),
+                  ])
+                  .split(area);
+              frame.render_widget(
+                  Block::default().borders(Borders::ALL).title(" RIFF "),
+                  area,
+              );
+              frame.render_widget(
+                  Paragraph::new(vec![
+                      Line::from(Span::styled(
+                          format!("{spinner}  Preparing Workbench"),
+                          Style::default().add_modifier(Modifier::BOLD),
+                      )),
+                      Line::from(""),
+                      Line::from("Connecting to Spotify and resolving playlist metadata…"),
+                      Line::from(format!("{track_count} track(s) · cache hits are reused automatically")),
+                  ])
+                  .alignment(Alignment::Center),
+                  rows[1],
+              );
+          }
+          '''
+          replace('src/workbench/mod.rs', marker, startup)
+
+          # Global key handling becomes semantic/action-based.
+          p = Path('src/workbench/mod.rs')
+          s = p.read_text()
+          start = s.index('fn handle_key(\n')
+          end = s.index('fn handle_search_key(\n')
+          new_block = r'''#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+          enum GlobalAction {
+              NextView,
+              PreviousView,
+              CycleTheme,
+              Quit,
+              TogglePlayback,
+              NextTrack,
+              PreviousTrack,
+              VolumeUp,
+              VolumeDown,
+              SeekForward,
+              SeekBackward,
+              ToggleShuffle,
+              ToggleRepeat,
+              OpenSearch,
+              OpenEditor,
+              OpenLyrics,
+          }
+
+          fn global_action_for_key(key: &KeyEvent) -> Option<GlobalAction> {
+              match key.code {
+                  KeyCode::Tab => Some(GlobalAction::NextView),
+                  KeyCode::BackTab => Some(GlobalAction::PreviousView),
+                  KeyCode::F(6) => Some(GlobalAction::CycleTheme),
+                  KeyCode::Char('q') | KeyCode::Esc => Some(GlobalAction::Quit),
+                  KeyCode::Char(' ') => Some(GlobalAction::TogglePlayback),
+                  KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right => Some(GlobalAction::NextTrack),
+                  KeyCode::Char('p') | KeyCode::Char('h') | KeyCode::Left => Some(GlobalAction::PreviousTrack),
+                  KeyCode::Char('+') | KeyCode::Char('=') => Some(GlobalAction::VolumeUp),
+                  KeyCode::Char('-') => Some(GlobalAction::VolumeDown),
+                  KeyCode::Char(']') => Some(GlobalAction::SeekForward),
+                  KeyCode::Char('[') => Some(GlobalAction::SeekBackward),
+                  KeyCode::Char('s') => Some(GlobalAction::ToggleShuffle),
+                  KeyCode::Char('r') => Some(GlobalAction::ToggleRepeat),
+                  KeyCode::Char('/') => Some(GlobalAction::OpenSearch),
+                  KeyCode::Char('e') => Some(GlobalAction::OpenEditor),
+                  KeyCode::Char('y') => Some(GlobalAction::OpenLyrics),
+                  _ => None,
+              }
+          }
+
+          fn handle_key(
+              workbench: &mut Workbench,
+              key: KeyEvent,
+              controls: &mpsc::UnboundedSender<Control>,
+          ) -> Result<bool, String> {
+              if workbench.state.view == View::Editor {
+                  return handle_editor_key(workbench, key, controls);
+              }
+              if workbench.state.view == View::Search {
+                  return handle_search_key(workbench, key, controls);
+              }
+
+              if key.modifiers.contains(KeyModifiers::ALT) {
+                  match key.code {
+                      KeyCode::Char('1') => workbench.state.view = View::NowPlaying,
+                      KeyCode::Char('2') => workbench.state.view = View::Search,
+                      KeyCode::Char('3') => workbench.state.view = View::Playlist,
+                      KeyCode::Char('4') => workbench.state.view = View::Lyrics,
+                      KeyCode::Char('5') => workbench.state.view = View::Editor,
+                      _ => {}
+                  }
+                  return Ok(false);
+              }
+
+              let Some(action) = global_action_for_key(&key) else {
+                  return Ok(false);
+              };
+              match action {
+                  GlobalAction::NextView => workbench.state.view = workbench.state.view.next(),
+                  GlobalAction::PreviousView => workbench.state.view = workbench.state.view.previous(),
+                  GlobalAction::CycleTheme => {
+                      workbench.state.theme = workbench.state.theme.next();
+                      workbench.state.message = format!("theme · {}", workbench.state.theme.name);
+                  }
+                  GlobalAction::Quit => {
+                      let _ = controls.send(Control::Quit);
+                      return Ok(true);
+                  }
+                  GlobalAction::TogglePlayback => { let _ = controls.send(Control::Toggle); }
+                  GlobalAction::NextTrack => { let _ = controls.send(Control::Next); }
+                  GlobalAction::PreviousTrack => { let _ = controls.send(Control::Previous); }
+                  GlobalAction::VolumeUp => adjust_volume(workbench, VOLUME_STEP_PERCENT as i16, controls),
+                  GlobalAction::VolumeDown => adjust_volume(workbench, -(VOLUME_STEP_PERCENT as i16), controls),
+                  GlobalAction::SeekForward => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
+                  GlobalAction::SeekBackward => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
+                  GlobalAction::ToggleShuffle => {
+                      let _ = controls.send(Control::Shuffle(!workbench.state.shuffle));
+                  }
+                  GlobalAction::ToggleRepeat => {
+                      let _ = controls.send(Control::Repeat(!workbench.state.repeat));
+                  }
+                  GlobalAction::OpenSearch => workbench.state.view = View::Search,
+                  GlobalAction::OpenEditor => workbench.state.view = View::Editor,
+                  GlobalAction::OpenLyrics => workbench.state.view = View::Lyrics,
+              }
+              Ok(false)
+          }
+
+          '''
+          p.write_text(s[:start] + new_block + s[end:])
+
+          replace('src/workbench/mod.rs', '''        _ => {
+                      " Tab views · Space play/pause · h/l prev/next · +/- volume · [/] seek · s shuffle · r repeat · F6 theme · q quit "
+                  }
+          ''', '''        _ => {
+                      " Tab/Shift+Tab views · Space play/pause · h/l track · +/- volume 5% · [/] seek 5s · / search · e editor · y lyrics · q quit "
+                  }
+          ''')
+          replace('src/workbench/mod.rs', '''    fn volume_math_is_quantized_and_bounded() {
+          ''', '''    fn global_keys_map_to_semantic_actions() {
+                  let play = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+                  let search = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
+                  let louder = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE);
+                  assert_eq!(global_action_for_key(&play), Some(GlobalAction::TogglePlayback));
+                  assert_eq!(global_action_for_key(&search), Some(GlobalAction::OpenSearch));
+                  assert_eq!(global_action_for_key(&louder), Some(GlobalAction::VolumeUp));
+              }
+
+              #[test]
+              fn volume_math_is_quantized_and_bounded() {
+          ''')
+
+          # Strengthen TUI CI contract around semantic keymaps and safe logging.
+          replace('scripts/check-tui-quality.sh', '''cargo test --bin riff workbench::tests -- --nocapture
+          ''', '''grep -q 'enum GlobalAction' src/workbench/mod.rs || fail 'Workbench global keys must map through semantic actions.'
+          grep -q 'init_tui_logging' src/main.rs || fail 'TUI debug logging must be initialized through the safe file logger.'
+
+          cargo test --bin riff workbench::tests -- --nocapture
+          ''')
+          PY
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --all-targets --all-features
+      - name: TUI quality
+        run: bash scripts/check-tui-quality.sh
+      - name: Commit patch and remove bootstrap workflow
+        shell: bash
+        run: |
+          rm .github/workflows/apply-v07-tui.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat(tui): polish startup logging and keymaps'
+          git push origin HEAD:feat/v0.7-core-polish
