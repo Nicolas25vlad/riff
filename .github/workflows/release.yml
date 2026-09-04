@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+
+      - name: Validate tag matches Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          test -n "$version"
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            artifact: riff-linux-x86_64
+          - name: Windows x86_64
+            os: windows-latest
+            artifact: riff-windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package Linux binary
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/riff dist/riff
+          tar -C dist -czf "riff-${{ needs.validate.outputs.version }}-linux-x86_64.tar.gz" riff
+          sha256sum "riff-${{ needs.validate.outputs.version }}-linux-x86_64.tar.gz" > "riff-${{ needs.validate.outputs.version }}-linux-x86_64.tar.gz.sha256"
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/riff.exe dist/riff.exe
+          Compress-Archive -Path dist/riff.exe -DestinationPath "riff-${{ needs.validate.outputs.version }}-windows-x86_64.zip" -Force
+          $hash = (Get-FileHash "riff-${{ needs.validate.outputs.version }}-windows-x86_64.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  riff-${{ needs.validate.outputs.version }}-windows-x86_64.zip" | Set-Content "riff-${{ needs.validate.outputs.version }}-windows-x86_64.zip.sha256"
+
+      - name: Upload Linux release files
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            riff-${{ needs.validate.outputs.version }}-linux-x86_64.tar.gz
+            riff-${{ needs.validate.outputs.version }}-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Upload Windows release files
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            riff-${{ needs.validate.outputs.version }}-windows-x86_64.zip
+            riff-${{ needs.validate.outputs.version }}-windows-x86_64.zip.sha256
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build release notes from changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.validate.outputs.version }}'
+          awk -v version="$version" '
+            $0 == "## " version { capture=1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+          cat >> release-notes.md <<'EOF'
+
+### Install / upgrade
+
+```bash
+cargo install riff-music --force
+```
+
+Spotify playback requires Spotify Premium.
+EOF
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Riff ${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            --verify-tag
