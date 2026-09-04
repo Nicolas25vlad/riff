@@ -449,7 +449,7 @@ fn init(path: PathBuf) -> Result<String, RiffError> {
 
 pub fn help() -> String {
     format!(
-        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  init [file]         Create a starter playlist (default: playlist.riff)\n  doctor              Check the local Riff environment\n  validate <file>     Validate a .riff playlist\n  inspect <file>      Parse and print a .riff playlist\n  play <file>         Resolve a .riff playlist on Spotify and start playback\n  search <query>      Smart fuzzy search (optional: --limit N --threshold 0-100 --exact)\n  inspect-track <id>  Inspect one Spotify track ID\n  pick <query>        Interactively choose a recording and print pinned DSL\n  player [uri]        Start Riff as a local Spotify Connect player\n  help                Print this help\n  version             Print version",
+        "riff {}\nMusic as code, from the terminal.\n\nUSAGE:\n  riff <COMMAND>\n\nCOMMANDS:\n  tui <file>          Open the interactive Riff Workbench\n  init [file]         Create a starter playlist (default: playlist.riff)\n  doctor              Check the local Riff environment\n  validate <file>     Validate a .riff playlist\n  inspect <file>      Parse and print a .riff playlist\n  play <file>         Resolve a .riff playlist on Spotify and start playback\n  search <query>      Smart fuzzy search (optional: --limit N --threshold 0-100 --exact)\n  inspect-track <id>  Inspect one Spotify track ID\n  pick <query>        Interactively choose a recording and print pinned DSL\n  player [uri]        Start Riff as a local Spotify Connect player\n  help                Print this help\n  version             Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -466,6 +466,11 @@ fn doctor() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_mentions_tui() {
+        assert!(help().contains("tui <file>"));
+    }
 
     #[test]
     fn parses_minimal_playlist() {

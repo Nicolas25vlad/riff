@@ -1,21 +1,13 @@
 # Installing Riff
 
-Riff is currently distributed straight from GitHub while the project is in early development.
+Riff is published on crates.io as `riff-music`. The installed executable is named `riff`.
 
-## Linux and WSL
+## Cargo
 
-Install the latest build from `main`:
+If Rust/Cargo is already installed, this is the preferred installation path on Linux, WSL and Windows:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.sh | bash
-```
-
-The installer checks Rust/Git and provisions the native audio build dependencies on Arch/Omarchy, Debian/Ubuntu, Fedora-family systems and WSL distributions based on them.
-
-For Fish, if needed:
-
-```fish
-fish_add_path $HOME/.cargo/bin
+cargo install riff-music
 ```
 
 Verify:
@@ -23,12 +15,27 @@ Verify:
 ```bash
 riff --version
 riff doctor
-riff tui playlist.riff
 ```
+
+If Fish cannot find the binary after installation:
+
+```fish
+fish_add_path $HOME/.cargo/bin
+```
+
+## Linux and WSL installer
+
+The repository installer can provision the native audio build dependencies and install the current GitHub build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.sh | bash
+```
+
+It supports Arch/Omarchy, Debian/Ubuntu, Fedora-family systems and WSL distributions based on them.
 
 ### WSL audio
 
-On WSL2 with WSLg, Riff detects the WSL environment and prefers its compiled PulseAudio backend when `PULSE_SERVER` is available. WSLg forwards that audio to the Windows host.
+On WSL2 with WSLg, Riff detects the environment and prefers its PulseAudio backend when `PULSE_SERVER` is available. WSLg forwards that audio to Windows.
 
 You normally do not need to configure audio manually. To inspect the environment:
 
@@ -36,7 +43,7 @@ You normally do not need to configure audio manually. To inspect the environment
 printf '%s\n' "$WSL_DISTRO_NAME" "$PULSE_SERVER"
 ```
 
-If you intentionally want to override automatic audio selection, set `RIFF_AUDIO_BACKEND`, for example:
+To override automatic audio selection intentionally:
 
 ```bash
 RIFF_AUDIO_BACKEND=rodio riff tui playlist.riff
@@ -44,25 +51,24 @@ RIFF_AUDIO_BACKEND=rodio riff tui playlist.riff
 
 ## Windows 11 native
 
-Requirements:
+Requirements for building/installing through Cargo:
 
-- Git for Windows
-- Rust stable with Cargo
-- a working MSVC Rust toolchain/build environment
+- Rust stable with Cargo;
+- a working MSVC Rust toolchain/build environment.
 
-From PowerShell:
+Install from crates.io:
+
+```powershell
+cargo install riff-music
+```
+
+The repository PowerShell installer is also available:
 
 ```powershell
 irm https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.ps1 | iex
 ```
 
-Or install directly with Cargo:
-
-```powershell
-cargo install --git https://github.com/Nicolas25vlad/riff --force
-```
-
-Riff uses librespot's Rodio backend on Windows, which outputs through the native Windows audio stack. Spotify credentials/cache are stored under `%LOCALAPPDATA%\Riff\spotify` when available.
+Riff uses librespot's Rodio backend on Windows and outputs through the native Windows audio stack. Spotify credentials/cache are stored under `%LOCALAPPDATA%\Riff\spotify` when available.
 
 Verify:
 
@@ -72,36 +78,9 @@ riff doctor
 riff tui playlist.riff
 ```
 
-## Project dependencies
-
-From a cloned Linux/WSL checkout:
-
-```bash
-bash scripts/deps.sh install
-```
-
-Useful commands:
-
-```bash
-bash scripts/deps.sh update
-bash scripts/deps.sh check
-bash scripts/deps.sh native
-bash scripts/deps.sh rust
-```
-
-On Windows, use Cargo directly:
-
-```powershell
-cargo fetch
-cargo check --all-targets --all-features
-cargo test --all-features
-```
-
 ## Linux / WSL audio dependencies
 
-Riff compiles Rodio plus PulseAudio support on Linux. Rodio remains the normal Linux default; WSLg prefers PulseAudio automatically.
-
-Manual packages:
+When building locally, Riff compiles Rodio plus PulseAudio support on Linux. Manual packages:
 
 ```bash
 # Arch / Omarchy
@@ -114,33 +93,37 @@ sudo apt-get install build-essential libasound2-dev libpulse-dev pkg-config
 sudo dnf install gcc make alsa-lib-devel pulseaudio-libs-devel pkgconf-pkg-config
 ```
 
-## Start the player
+From a cloned Linux/WSL checkout you can let Riff manage these checks:
+
+```bash
+bash scripts/deps.sh install
+```
+
+## First run
 
 Spotify playback requires Spotify Premium because Riff uses `librespot`.
 
-Headless Spotify Connect device:
+Create a playlist:
 
 ```bash
-riff player
+riff init playlist.riff
 ```
 
-Play a `.riff` playlist with the terminal UI:
+Open the Workbench:
 
 ```bash
 riff tui playlist.riff
 ```
 
-On first authentication, Riff opens Spotify authorization in the browser and caches the resulting credentials.
+On first authentication, Riff opens Spotify authorization in the browser and caches the resulting credentials locally.
 
-## Playlist DSL
-
-Create a starter playlist:
+Headless Spotify Connect mode is also available:
 
 ```bash
-riff init
+riff player
 ```
 
-Example:
+## Playlist DSL
 
 ```riff
 playlist "my-playlist" {
@@ -158,16 +141,30 @@ riff inspect playlist.riff
 
 ## Update
 
+For crates.io installations:
+
+```bash
+cargo install riff-music --force
+```
+
+If you intentionally installed the GitHub build instead, rerun the platform installer or use:
+
 ```bash
 cargo install --git https://github.com/Nicolas25vlad/riff --force
 ```
 
-You can also rerun the platform installer.
-
 ## Uninstall
 
+For the crates.io package:
+
 ```bash
-cargo uninstall riff
+cargo uninstall riff-music
+```
+
+Older Git installations may be registered under the old package name. Check with:
+
+```bash
+cargo install --list | grep -A3 -B1 riff
 ```
 
 ## Build from source
