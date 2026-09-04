@@ -150,14 +150,14 @@ jobs:
           test -s release-notes.md
           cat >> release-notes.md <<'EOF'
 
-### Install / upgrade
+          ### Install / upgrade
 
-```bash
-cargo install riff-music --force
-```
+          ```bash
+          cargo install riff-music --force
+          ```
 
-Spotify playback requires Spotify Premium.
-EOF
+          Spotify playback requires Spotify Premium.
+          EOF
 
       - name: Publish GitHub Release
         shell: bash
