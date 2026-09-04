@@ -22,24 +22,17 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
+
           path = Path('src/workbench/mod.rs')
           text = path.read_text()
-          old = '''    println!(
-              "Opening Riff Workbench for `{}` ({} tracks)...",
-              playlist.name,
-              playlist.tracks.len()
-          );'''
-          # Normalize the indentation embedded by YAML before matching Rust source.
-          old = old.replace('              ', '        ')
-          if old not in text:
-              old = '''    println!(
-        "Opening Riff Workbench for `{}` ({} tracks)...",
-        playlist.name,
-        playlist.tracks.len()
-    );'''
-          if old not in text:
-              raise SystemExit('startup println block not found')
-          path.write_text(text.replace(old, '', 1))
+          pattern = re.compile(
+              r'\n\s*println!\(\n\s*"Opening Riff Workbench for `\{\}` \(\{\} tracks\)\.\.\.",\n\s*playlist\.name,\n\s*playlist\.tracks\.len\(\)\n\s*\);\n'
+          )
+          updated, count = pattern.subn('\n', text, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one startup println block, removed {count}')
+          path.write_text(updated)
 
       - name: Format
         run: cargo fmt --all
