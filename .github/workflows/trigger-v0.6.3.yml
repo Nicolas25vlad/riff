@@ -1,0 +1,33 @@
+name: Trigger v0.6.3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/trigger-v0.6.3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create v0.6.3 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)" = "0.6.3"
+          if git rev-parse refs/tags/v0.6.3 >/dev/null 2>&1; then
+            echo "v0.6.3 already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a v0.6.3 -m "Riff v0.6.3"
+          git push origin v0.6.3
