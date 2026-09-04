@@ -2,6 +2,21 @@
 
 All notable user-facing changes to Riff are documented here.
 
+## 0.6.3
+
+### Changed
+
+- refreshed the README around the current Workbench-first product experience;
+- documented the main views, controls, deterministic track workflow and current project status more clearly;
+- added crates.io and latest-release badges so install/version state is visible from the repository front page;
+- prepared a permanent tag-driven GitHub Release workflow with Linux and Windows release binaries.
+
+### Release engineering
+
+- release tags are validated against `Cargo.toml` before publishing;
+- tagged releases build and package Linux and Windows binaries before creating the GitHub Release;
+- the existing package publisher remains responsible for publishing the matching `riff-music` version to crates.io after the GitHub Release is published.
+
 ## 0.6.2
 
 ### Changed
