@@ -37,4 +37,4 @@ grep -q 'init_tui_logging' src/main.rs || fail 'TUI debug logging must be initia
 
 cargo test --bin riff workbench::tests -- --nocapture
 
-echo 'TUI quality invariants passed.'
+echo 'TUI terminal ownership, input and virtual-render invariants passed.'

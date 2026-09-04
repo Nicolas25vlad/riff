@@ -20,7 +20,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 
 Write-Step "Installing Riff from GitHub..."
-cargo install --git $Repo --force
+cargo install --git $Repo --locked --force
 
 $CargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME ".cargo" }
 $BinDir = Join-Path $CargoHome "bin"
