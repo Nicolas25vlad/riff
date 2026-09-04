@@ -2,13 +2,13 @@
 
 GitHub Releases are the source of truth for package publication.
 
-A published, non-prerelease GitHub Release with a tag such as `v0.6.0` triggers `.github/workflows/publish-packages.yml`, which publishes the matching version to crates.io.
+A published, non-prerelease GitHub Release with a tag such as `v0.7.0` triggers `.github/workflows/publish-packages.yml`, which publishes the matching version to crates.io.
 
 ## Current package targets
 
 ### crates.io
 
-Active.
+Active. The first public Cargo release, `riff-music` 0.6.0, was published successfully on September 4, 2026.
 
 The application is called **Riff** and the installed executable is still `riff`, but the crates.io package is named `riff-music` because the `riff` package name is already owned by an unrelated crate.
 
@@ -23,7 +23,7 @@ Temporarily paused because new AUR account creation is currently unavailable. Th
 
 ## One-time crates.io setup
 
-1. Sign in to crates.io with the GitHub account that will own the `riff-music` crate.
+1. Sign in to crates.io with the GitHub account that owns the `riff-music` crate.
 2. Verify the crates.io account email.
 3. Create an API token with permission to publish/update the crate.
 4. In this GitHub repository, create an Actions secret named:
@@ -34,7 +34,7 @@ CARGO_REGISTRY_TOKEN
 
 Never commit this token to the repository.
 
-## Normal release checklist
+## Release checklist
 
 1. Make sure `main` is green.
 2. Update the version in `Cargo.toml` using SemVer.
@@ -51,20 +51,6 @@ Git tag            = v0.7.0
 7. Verify the new version on crates.io.
 
 The workflow deliberately aborts if the release tag does not equal `v${Cargo.toml version}`.
-
-## First crates.io bootstrap
-
-The first publication of `riff-music` 0.6.0 uses `.github/workflows/publish-crates-bootstrap.yml` because the connected automation used to prepare the repository cannot create a GitHub Release directly.
-
-The bootstrap workflow:
-
-- only triggers when that workflow itself lands on `main`;
-- is pinned to package `riff-music` version `0.6.0`;
-- requires `CARGO_REGISTRY_TOKEN`;
-- runs `cargo publish --dry-run` immediately before publication;
-- then runs the real `cargo publish`.
-
-After `riff-music` 0.6.0 is verified on crates.io, remove the bootstrap workflow. Future versions use the normal GitHub Release workflow above.
 
 ## What CI validates before release
 
