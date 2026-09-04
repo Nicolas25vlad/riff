@@ -70,8 +70,11 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Cargo.lock
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Final crates.io dry run
-        run: cargo publish --dry-run
+        run: cargo publish --locked --dry-run
 
       - name: Publish crates.io
-        run: cargo publish
+        run: cargo publish --locked
