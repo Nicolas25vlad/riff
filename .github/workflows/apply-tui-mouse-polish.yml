@@ -40,8 +40,7 @@ jobs:
               } else {
                   let _ = controls.send(Control::VolumeDown);
               }
-          }
-          '''
+          }'''.replace('              ', '            ', 14)
           new = '''        MouseEventKind::ScrollUp => {
               if workbench.state.view == View::Search {
                   workbench.state.search.move_up();
@@ -67,8 +66,7 @@ jobs:
               {
                   let _ = controls.send(Control::VolumeDown);
               }
-          }
-          '''
+          }'''.replace('              ', '            ', 22)
           if old not in text:
               raise SystemExit('expected mouse scroll block not found')
           path.write_text(text.replace(old, new, 1))
