@@ -2,11 +2,23 @@
 
 GitHub Releases are the source of truth for package publication.
 
-A published, non-prerelease GitHub Release with a tag such as `v0.6.0` triggers `.github/workflows/publish-packages.yml`, which publishes the matching version to crates.io and updates the AUR package.
+A published, non-prerelease GitHub Release with a tag such as `v0.6.0` triggers `.github/workflows/publish-packages.yml`, which publishes the matching version to crates.io.
 
-## One-time repository setup
+## Current package targets
 
 ### crates.io
+
+Active.
+
+```bash
+cargo install riff
+```
+
+### AUR
+
+Temporarily paused because new AUR account creation is currently unavailable. The `packaging/aur/PKGBUILD.template` is intentionally kept in the repository so AUR publishing can be re-enabled later, but no active CI or release workflow currently publishes to AUR.
+
+## One-time crates.io setup
 
 1. Sign in to crates.io with the GitHub account that will own the `riff` crate.
 2. Verify the crates.io account email.
@@ -19,20 +31,7 @@ CARGO_REGISTRY_TOKEN
 
 Never commit this token to the repository.
 
-### AUR
-
-1. Create/sign in to the AUR account that will maintain `riff`.
-2. Create a dedicated SSH key pair for the Riff release bot.
-3. Add the **public** key to the AUR account.
-4. Store the **private** key as the GitHub Actions secret:
-
-```text
-AUR_SSH_PRIVATE_KEY
-```
-
-The release workflow connects only to `aur.archlinux.org` and pushes `PKGBUILD` plus `.SRCINFO` to the `riff` AUR repository.
-
-## Release checklist
+## Normal release checklist
 
 1. Make sure `main` is green.
 2. Update the version in `Cargo.toml` using SemVer.
@@ -46,45 +45,46 @@ Git tag            = v0.7.0
 
 5. Create and **publish** a GitHub Release for that tag.
 6. Watch the `Publish Packages` workflow.
-7. Verify the new version on crates.io and AUR.
+7. Verify the new version on crates.io.
 
 The workflow deliberately aborts if the release tag does not equal `v${Cargo.toml version}`.
 
+## First crates.io bootstrap
+
+The first publication of Riff 0.6.0 uses `.github/workflows/publish-crates-bootstrap.yml` because the connected automation used to prepare the repository cannot create a GitHub Release directly.
+
+The bootstrap workflow:
+
+- only triggers when that workflow itself lands on `main`;
+- is pinned to version `0.6.0`;
+- requires `CARGO_REGISTRY_TOKEN`;
+- runs `cargo publish --dry-run` immediately before publication;
+- then runs the real `cargo publish`.
+
+After Riff 0.6.0 is verified on crates.io, remove the bootstrap workflow. Future versions use the normal GitHub Release workflow above.
+
 ## What CI validates before release
 
-`Package Check` runs on packaging-related pull requests and validates:
-
-- `cargo publish --dry-run` on Linux;
-- the AUR `PKGBUILD.template` in an Arch Linux container;
-- `.SRCINFO` generation with `makepkg --printsrcinfo`.
+`Package Check` runs on packaging-related pull requests and validates `cargo publish --dry-run` on Linux.
 
 The normal Riff CI still owns Rust formatting, Clippy, tests, cross-platform checks and CLI smoke tests.
 
-## AUR source of truth
+## Dormant AUR packaging
 
-Do not hand-maintain generated `PKGBUILD` or `.SRCINFO` files in this repository.
-
-The maintained file is:
+Do not hand-maintain generated `PKGBUILD` or `.SRCINFO` files in this repository. The dormant source template remains:
 
 ```text
 packaging/aur/PKGBUILD.template
 ```
 
-At release time the workflow injects:
-
-- the version from the release tag;
-- the SHA-256 of the immutable tagged source archive.
-
-Then it generates `.SRCINFO` with Arch's own tooling before pushing both files to AUR.
+When AUR publishing is re-enabled, restore CI validation and generate `.SRCINFO` with Arch's own tooling before pushing.
 
 ## Current reproducibility note
 
-Riff does not yet commit `Cargo.lock` (tracked in #13). Until that is fixed, crate/AUR builds resolve dependency versions during packaging. After #13 lands, release/package commands should be tightened to use `--locked` where supported.
+Riff does not yet commit `Cargo.lock` (tracked in #13). Until that is fixed, crate builds resolve dependency versions during packaging. After #13 lands, release/package commands should be tightened to use `--locked` where supported.
 
 ## Failure behavior
 
 A failed crates.io publish does not rewrite or delete an existing crates.io version. crates.io versions are immutable.
 
-An AUR publish only commits when the generated package metadata differs from the current AUR repository.
-
-If either registry credential is missing, the corresponding job exits with an explicit error instead of silently skipping publication.
+If the crates.io credential is missing, the publishing job exits with an explicit error instead of silently skipping publication.
