@@ -51,7 +51,8 @@ impl ResolutionCache {
     }
 
     fn entry_path(&self, normalized: &str) -> PathBuf {
-        self.dir.join(format!("{:016x}.cache", fnv1a64(normalized.as_bytes())))
+        self.dir
+            .join(format!("{:016x}.cache", fnv1a64(normalized.as_bytes())))
     }
 }
 

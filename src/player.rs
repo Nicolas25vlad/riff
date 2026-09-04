@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, fs};
 use crate::{
     fuzzy::{DEFAULT_THRESHOLD, rank_candidates},
     platform,
+    resolution_cache::ResolutionCache,
 };
 use env_logger::Env;
 use librespot::{
@@ -27,7 +28,7 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
-const FUZZY_CANDIDATE_POOL: usize = 30;
+const FUZZY_CANDIDATE_POOL: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackRequest {
@@ -175,6 +176,7 @@ pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
 
 async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Vec<String>, String> {
     let mut resolved = Vec::with_capacity(tracks.len());
+    let resolution_cache = ResolutionCache::open()?;
 
     for (index, track) in tracks.iter().enumerate() {
         if let Some(uri) = track.id.as_deref() {
@@ -187,6 +189,13 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             println!("  [{}/{}] pinned {}", index + 1, tracks.len(), track.label);
             println!("       -> {uri}");
             resolved.push(uri.to_string());
+            continue;
+        }
+
+        if let Some(uri) = resolution_cache.get(&track.label) {
+            println!("  [{}/{}] cached {}", index + 1, tracks.len(), track.label);
+            println!("       -> {uri}");
+            resolved.push(uri);
             continue;
         }
 
@@ -212,6 +221,7 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             candidate.display_name(),
             candidate.uri
         );
+        resolution_cache.put(&track.label, &candidate.uri)?;
         resolved.push(candidate.uri);
     }
 

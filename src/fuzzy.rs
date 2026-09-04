@@ -179,6 +179,9 @@ fn version_penalty(candidate: &SearchCandidate) -> u8 {
         "instrumental",
         "radio edit",
         "re-record",
+        "greatest hits",
+        "best of",
+        "compilation",
     ]
     .iter()
     .filter(|marker| haystack.contains(**marker))
@@ -232,6 +235,26 @@ mod tests {
             100,
         );
         assert!(ranked.is_empty());
+    }
+
+    #[test]
+    fn prefers_canonical_album_over_compilation_when_match_is_equal() {
+        let mut canonical = candidate("War Pigs", "Black Sabbath");
+        canonical.metadata.insert("album".into(), "Paranoid".into());
+        let mut compilation = candidate("War Pigs", "Black Sabbath");
+        compilation
+            .metadata
+            .insert("album".into(), "Black Sabbath Greatest Hits".into());
+        compilation
+            .metadata
+            .insert("popularity".into(), "99".into());
+        let ranked = rank_candidates(
+            "Black Sabbath War Pigs",
+            vec![compilation, canonical],
+            false,
+            DEFAULT_THRESHOLD,
+        );
+        assert_eq!(ranked[0].metadata["album"], "Paranoid");
     }
 
     #[test]

@@ -36,6 +36,7 @@ const WIDE_ART_SIZE: Size = Size::new(28, 14);
 const COMPACT_ART_SIZE: Size = Size::new(18, 9);
 const SEARCH_ART_SIZE: Size = Size::new(22, 11);
 const VOLUME_MAX: u16 = u16::MAX;
+const VOLUME_STEP_PERCENT: u8 = 5;
 const SEEK_STEP_MS: u32 = 5_000;
 
 struct RenderedArtwork {
@@ -102,15 +103,37 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     ui_result
 }
 
+struct TerminalModeGuard {
+    raw_enabled: bool,
+    alternate_enabled: bool,
+}
+
+impl Drop for TerminalModeGuard {
+    fn drop(&mut self) {
+        if self.alternate_enabled {
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
+        }
+        if self.raw_enabled {
+            let _ = disable_raw_mode();
+        }
+    }
+}
+
 async fn run_terminal(
     workbench: &mut Workbench,
     controls: mpsc::UnboundedSender<Control>,
     mut updates: mpsc::UnboundedReceiver<PlayerUpdate>,
 ) -> Result<(), String> {
     enable_raw_mode().map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
+    let mut terminal_mode = TerminalModeGuard {
+        raw_enabled: true,
+        alternate_enabled: false,
+    };
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
         .map_err(|error| format!("could not enter alternate screen: {error}"))?;
+    terminal_mode.alternate_enabled = true;
 
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
     let backend = CrosstermBackend::new(stdout);
@@ -159,8 +182,11 @@ async fn run_terminal(
     }
     .await;
 
-    let restore = restore_terminal(&mut terminal);
-    loop_result.and(restore)
+    let cursor_result = terminal
+        .show_cursor()
+        .map_err(|error| format!("could not restore cursor: {error}"));
+    drop(terminal_mode);
+    loop_result.and(cursor_result)
 }
 
 fn apply_player_update(
@@ -309,11 +335,9 @@ fn handle_key(
             let _ = controls.send(Control::Previous);
         }
         KeyCode::Char('+') | KeyCode::Char('=') => {
-            let _ = controls.send(Control::VolumeUp);
+            adjust_volume(workbench, VOLUME_STEP_PERCENT as i16, controls)
         }
-        KeyCode::Char('-') => {
-            let _ = controls.send(Control::VolumeDown);
-        }
+        KeyCode::Char('-') => adjust_volume(workbench, -(VOLUME_STEP_PERCENT as i16), controls),
         KeyCode::Char(']') => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
         KeyCode::Char('[') => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
         KeyCode::Char('s') => {
@@ -511,6 +535,36 @@ fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> 
     Ok(())
 }
 
+fn volume_percent(volume: u16) -> u8 {
+    ((u32::from(volume) * 100 + u32::from(VOLUME_MAX) / 2) / u32::from(VOLUME_MAX)) as u8
+}
+
+fn volume_from_percent(percent: u8) -> u16 {
+    ((u32::from(percent.min(100)) * u32::from(VOLUME_MAX) + 50) / 100) as u16
+}
+
+fn quantize_volume_percent(percent: u8) -> u8 {
+    (((percent.min(100) + VOLUME_STEP_PERCENT / 2) / VOLUME_STEP_PERCENT) * VOLUME_STEP_PERCENT)
+        .min(100)
+}
+
+fn set_volume_percent(
+    workbench: &mut Workbench,
+    percent: u8,
+    controls: &mpsc::UnboundedSender<Control>,
+) {
+    let percent = quantize_volume_percent(percent);
+    let volume = volume_from_percent(percent);
+    workbench.state.volume = volume;
+    let _ = controls.send(Control::SetVolume(volume));
+}
+
+fn adjust_volume(workbench: &mut Workbench, delta: i16, controls: &mpsc::UnboundedSender<Control>) {
+    let current = i16::from(volume_percent(workbench.state.volume));
+    let target = (current + delta).clamp(0, 100) as u8;
+    set_volume_percent(workbench, target, controls);
+}
+
 fn seek_relative(workbench: &Workbench, delta_ms: i64, controls: &mpsc::UnboundedSender<Control>) {
     let duration = workbench.state.duration_ms();
     if duration == 0 {
@@ -620,9 +674,8 @@ fn handle_mouse(
             {
                 if rect.width > 1 {
                     let relative = mouse.column.saturating_sub(rect.x) as f64 / rect.width as f64;
-                    let _ = controls.send(Control::SetVolume(
-                        (VOLUME_MAX as f64 * relative.clamp(0.0, 1.0)) as u16,
-                    ));
+                    let percent = (relative.clamp(0.0, 1.0) * 100.0).round() as u8;
+                    set_volume_percent(workbench, percent, controls);
                 }
             } else if workbench.state.view == View::Search
                 && let Some((index, _)) = workbench
@@ -646,7 +699,7 @@ fn handle_mouse(
                 .volume
                 .is_some_and(|rect| contains(rect, point))
             {
-                let _ = controls.send(Control::VolumeUp);
+                adjust_volume(workbench, VOLUME_STEP_PERCENT as i16, controls);
             }
         }
         MouseEventKind::ScrollDown => {
@@ -659,7 +712,7 @@ fn handle_mouse(
                 .volume
                 .is_some_and(|rect| contains(rect, point))
             {
-                let _ = controls.send(Control::VolumeDown);
+                adjust_volume(workbench, -(VOLUME_STEP_PERCENT as i16), controls);
             }
         }
         _ => {}
@@ -1274,11 +1327,12 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
         Paragraph::new(flags).style(Style::default().fg(theme.muted)),
         top[3],
     );
-    let volume_ratio = workbench.state.volume as f64 / VOLUME_MAX as f64;
+    let volume_percent = volume_percent(workbench.state.volume);
+    let volume_ratio = f64::from(volume_percent) / 100.0;
     frame.render_widget(
         Gauge::default()
             .ratio(volume_ratio)
-            .label(format!("vol {:>3}%", (volume_ratio * 100.0).round() as u8)),
+            .label(format!("vol {volume_percent:>3}%")),
         top[4],
     );
     workbench.state.hits.volume = Some(top[4]);
@@ -1325,18 +1379,6 @@ fn format_duration(duration_ms: u32) -> String {
     format!("{}:{:02}", total_seconds / 60, total_seconds % 60)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), String> {
-    disable_raw_mode().map_err(|error| format!("could not restore terminal mode: {error}"))?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )
-    .map_err(|error| format!("could not leave alternate screen: {error}"))?;
-    terminal
-        .show_cursor()
-        .map_err(|error| format!("could not restore cursor: {error}"))
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1344,6 +1386,17 @@ mod tests {
     #[test]
     fn formats_transport_time() {
         assert_eq!(format_duration(475_000), "7:55");
+    }
+
+    #[test]
+    fn volume_math_is_quantized_and_bounded() {
+        assert_eq!(volume_percent(volume_from_percent(0)), 0);
+        assert_eq!(volume_percent(volume_from_percent(5)), 5);
+        assert_eq!(volume_percent(volume_from_percent(95)), 95);
+        assert_eq!(volume_percent(volume_from_percent(100)), 100);
+        assert_eq!(quantize_volume_percent(2), 0);
+        assert_eq!(quantize_volume_percent(3), 5);
+        assert_eq!(quantize_volume_percent(98), 100);
     }
 
     #[test]

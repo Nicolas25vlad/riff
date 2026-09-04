@@ -21,7 +21,7 @@ use librespot::{
         player::{Player, PlayerEvent},
     },
 };
-use riff::{Playlist, platform, player};
+use riff::{Playlist, platform, player, resolution_cache::ResolutionCache};
 use tokio::sync::{Mutex, mpsc};
 
 use super::model::{LyricsLine, PlaybackStatus, QueueItem};
@@ -40,8 +40,6 @@ pub enum Control {
     Toggle,
     Next,
     Previous,
-    VolumeUp,
-    VolumeDown,
     SetVolume(u16),
     Seek(u32),
     Shuffle(bool),
@@ -99,16 +97,21 @@ pub async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String
         .map_err(|err| format!("could not connect to Spotify for TUI metadata: {err}"))?;
 
     let mut queue = Vec::with_capacity(playlist.tracks.len());
+    let resolution_cache = ResolutionCache::open()?;
     for request in &playlist.tracks {
         let uri = if let Some(uri) = request.id.as_deref() {
             uri.to_string()
+        } else if let Some(uri) = resolution_cache.get(&request.label) {
+            uri
         } else {
-            player::search(&request.label, 1)
+            let uri = player::search(&request.label, 1)
                 .await?
                 .into_iter()
                 .next()
                 .ok_or_else(|| format!("no confident Spotify track found for `{}`", request.label))?
-                .uri
+                .uri;
+            resolution_cache.put(&request.label, &uri)?;
+            uri
         };
 
         queue.push(queue_item_from_uri(&session, &uri).await?);
@@ -175,19 +178,24 @@ pub async fn run_player(
         HashMap::<String, (String, Vec<LyricsLine>)>::new(),
     ));
     let lyrics_pending = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let mut volume_tick = tokio::time::interval(Duration::from_millis(40));
+    volume_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut pending_volume: Option<u16> = None;
 
     tokio::pin!(spirc_task);
     loop {
         tokio::select! {
             _ = &mut spirc_task => return Err("Spotify Connect stopped unexpectedly".to_string()),
+            _ = volume_tick.tick(), if pending_volume.is_some() => {
+                let volume = pending_volume.take().expect("guarded by is_some");
+                spirc.set_volume(volume).map_err(|err| format!("could not set volume: {err}"))?;
+            }
             command = controls.recv() => {
                 match command {
                     Some(Control::Toggle) => spirc.play_pause().map_err(|err| format!("could not toggle playback: {err}"))?,
                     Some(Control::Next) => spirc.next().map_err(|err| format!("could not skip track: {err}"))?,
                     Some(Control::Previous) => spirc.prev().map_err(|err| format!("could not go to previous track: {err}"))?,
-                    Some(Control::VolumeUp) => spirc.volume_up().map_err(|err| format!("could not raise volume: {err}"))?,
-                    Some(Control::VolumeDown) => spirc.volume_down().map_err(|err| format!("could not lower volume: {err}"))?,
-                    Some(Control::SetVolume(volume)) => spirc.set_volume(volume).map_err(|err| format!("could not set volume: {err}"))?,
+                    Some(Control::SetVolume(volume)) => pending_volume = Some(volume),
                     Some(Control::Seek(position_ms)) => spirc.set_position_ms(position_ms).map_err(|err| format!("could not seek: {err}"))?,
                     Some(Control::Shuffle(enabled)) => spirc.shuffle(enabled).map_err(|err| format!("could not change shuffle: {err}"))?,
                     Some(Control::Repeat(enabled)) => spirc.repeat(enabled).map_err(|err| format!("could not change repeat: {err}"))?,
