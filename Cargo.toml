@@ -2,6 +2,7 @@
 name = "riff"
 version = "0.6.0"
 edition = "2024"
+rust-version = "1.85"
 description = "A terminal-first music player where playlists are code."
 license = "MIT"
 repository = "https://github.com/Nicolas25vlad/riff"
@@ -9,6 +10,8 @@ homepage = "https://github.com/Nicolas25vlad/riff"
 readme = "README.md"
 keywords = ["music", "spotify", "terminal", "tui", "rust"]
 categories = ["command-line-utilities", "multimedia::audio"]
+publish = true
+exclude = [".github/**", "packaging/**", "scripts/**", "install.sh", "install.ps1"]
 
 [dependencies]
 crossterm = "0.29"
