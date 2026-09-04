@@ -99,14 +99,7 @@ pub async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String
         .map_err(|err| format!("could not connect to Spotify for TUI metadata: {err}"))?;
 
     let mut queue = Vec::with_capacity(playlist.tracks.len());
-    for (index, request) in playlist.tracks.iter().enumerate() {
-        println!(
-            "  [{}/{}] {}",
-            index + 1,
-            playlist.tracks.len(),
-            request.label
-        );
-
+    for request in &playlist.tracks {
         let uri = if let Some(uri) = request.id.as_deref() {
             uri.to_string()
         } else {
@@ -118,9 +111,7 @@ pub async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String
                 .uri
         };
 
-        let item = queue_item_from_uri(&session, &uri).await?;
-        println!("       -> {}", item.label());
-        queue.push(item);
+        queue.push(queue_item_from_uri(&session, &uri).await?);
     }
 
     session.shutdown();
