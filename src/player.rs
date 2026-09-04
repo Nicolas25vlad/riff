@@ -71,8 +71,6 @@ impl Default for PlayerOptions {
 }
 
 pub async fn run(options: PlayerOptions) -> Result<(), String> {
-    init_logging();
-
     let (session_config, cache, credentials) = session_parts()?;
     let player_config = PlayerConfig::default();
     let audio_format = AudioFormat::default();
@@ -158,7 +156,6 @@ pub async fn search_advanced(
     exact: bool,
     threshold: u8,
 ) -> Result<Vec<SearchCandidate>, String> {
-    init_logging();
     let session = discovery_session().await?;
     let result = smart_search_with_session(&session, query, limit, exact, threshold).await;
     session.shutdown();
@@ -170,7 +167,6 @@ pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
         return Err("track id must look like `spotify:track:<id>`".to_string());
     }
 
-    init_logging();
     let session = discovery_session().await?;
     let result = enrich_candidate(&session, uri.to_string(), BTreeMap::new()).await;
     session.shutdown();
@@ -372,13 +368,13 @@ fn spotify_search_uri(query: &str) -> String {
     format!("spotify:search:{encoded}")
 }
 
-fn init_logging() {
-    let env = Env::default().filter_or("RIFF_LOG", "librespot=info");
+pub fn init_cli_logging() {
+    let env = Env::default().filter_or("RIFF_LOG", "riff=info,librespot=info");
     let _ = env_logger::Builder::from_env(env).try_init();
 }
 
 fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
-    println!("No cached Spotify login found. Opening Spotify authorization in your browser...");
+    log::info!("No cached Spotify login found. Opening Spotify authorization in your browser...");
 
     OAuthClientBuilder::new(
         &session_config.client_id,

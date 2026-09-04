@@ -41,6 +41,8 @@ async fn main() {
         return;
     }
 
+    riff::player::init_cli_logging();
+
     match Command::parse(&args) {
         Ok(command) => match run(command).await {
             Ok(output) => {
