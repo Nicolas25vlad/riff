@@ -6,7 +6,8 @@ fail() {
   exit 1
 }
 
-# The Workbench owns the alternate screen. Direct terminal writes corrupt Ratatui frames.
+# The Workbench is a full-screen product surface. Keep its entire code path free of direct
+# terminal writes so startup, alternate-screen rendering and teardown stay visually clean.
 if grep -RInE '\b(print|eprint)ln!\s*\(' src/workbench --include='*.rs'; then
   fail 'Workbench must not write directly to stdout/stderr while it owns the terminal.'
 fi
