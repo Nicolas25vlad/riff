@@ -333,7 +333,7 @@ fn handle_search_key(
 ) -> Result<bool, String> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
-            KeyCode::Char('a') => append_selected_to_playlist(workbench, controls)?,
+            KeyCode::Char('a') => append_selected_to_playlist(workbench)?,
             KeyCode::Char('p') => play_selected_search(workbench, controls),
             KeyCode::Char('q') => {
                 let _ = controls.send(Control::Quit);
@@ -453,10 +453,7 @@ fn play_selected_search(workbench: &mut Workbench, controls: &mpsc::UnboundedSen
     }
 }
 
-fn append_selected_to_playlist(
-    workbench: &mut Workbench,
-    controls: &mpsc::UnboundedSender<Control>,
-) -> Result<(), String> {
+fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> {
     let Some(item) = workbench.state.search.selected().cloned() else {
         return Ok(());
     };
@@ -487,7 +484,6 @@ fn append_selected_to_playlist(
         .map_err(|error| format!("could not update playlist: {error}"))?;
 
     workbench.state.queue.push(item.clone());
-    let _ = controls.send(Control::AddToQueue(item.uri.clone()));
     workbench.state.git = git_context::detect(&workbench.state.file_path);
     if !workbench.editor.dirty {
         workbench.editor = EditorState::load(&workbench.state.file_path)?;
@@ -787,7 +783,7 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
         let details = vec![
             Line::from(Span::styled(&item.title, Style::default().add_modifier(Modifier::BOLD))),
             Line::from(Span::styled(&item.artist, Style::default().fg(theme.accent))),
-            Line::from(&item.album),
+            Line::from(item.album.as_str()),
             Line::from(format_duration(item.duration_ms)),
             Line::from(""),
             Line::from(Span::styled("Enter play · Ctrl+A add to .riff", Style::default().fg(theme.muted))),
