@@ -19,6 +19,5 @@ if grep -RIn 'env_logger' src/workbench --include='*.rs'; then
 fi
 
 cargo test --bin riff workbench::tests -- --nocapture
-cargo test --bin riff workbench::model::tests -- --nocapture || true
 
 echo 'TUI quality invariants passed.'
