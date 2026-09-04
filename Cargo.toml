@@ -1,5 +1,5 @@
 [package]
-name = "riff"
+name = "riff-music"
 version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
@@ -12,6 +12,14 @@ keywords = ["music", "spotify", "terminal", "tui", "rust"]
 categories = ["command-line-utilities", "multimedia::audio"]
 publish = true
 exclude = [".github/**", "packaging/**", "scripts/**", "install.sh", "install.ps1"]
+
+[lib]
+name = "riff"
+path = "src/lib.rs"
+
+[[bin]]
+name = "riff"
+path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.29"
