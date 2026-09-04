@@ -1,0 +1,61 @@
+name: Fix PR33 Review Gate
+
+on:
+  push:
+    branches: [feat/workbench-v2-shell]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/workbench-v2-shell
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Guard playlist writes against dirty editor buffer
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/workbench/mod.rs')
+          text = path.read_text()
+          needle = '''fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> {\n    let Some(item) = workbench.state.search.selected().cloned() else {'''
+          replacement = '''fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> {\n    if workbench.editor.dirty {\n        workbench.state.message =\n            "save or discard editor changes before adding tracks from Search".into();\n        return Ok(());\n    }\n\n    let Some(item) = workbench.state.search.selected().cloned() else {'''
+          if needle not in text:
+              raise SystemExit('append function anchor not found')
+          text = text.replace(needle, replacement, 1)
+          old = '''    if !workbench.editor.dirty {\n        workbench.editor = EditorState::load(&workbench.state.file_path)?;\n    }'''
+          new = '''    workbench.editor = EditorState::load(&workbench.state.file_path)?;'''
+          if old not in text:
+              raise SystemExit('editor reload anchor not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Validate fix
+        run: |
+          cargo fmt --all
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features --no-fail-fast
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/workbench/mod.rs
+          git commit -m "fix(tui): protect unsaved editor changes"
+          git push origin HEAD:feat/workbench-v2-shell
