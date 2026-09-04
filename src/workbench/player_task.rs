@@ -46,7 +46,6 @@ pub enum Control {
     Repeat(bool),
     Search(String),
     PlayUri(String),
-    AddToQueue(String),
     RequestArtwork { key: String, cover_id: String },
     Quit,
 }
@@ -168,10 +167,6 @@ pub async fn run_player(
                         spirc.load(LoadRequest::from_tracks(vec![uri], LoadRequestOptions::default()))
                             .map_err(|err| format!("could not load selected track: {err}"))?;
                         spirc.play().map_err(|err| format!("could not play selected track: {err}"))?;
-                    }
-                    Some(Control::AddToQueue(uri)) => {
-                        let parsed = SpotifyUri::from_uri(&uri).map_err(|err| format!("invalid Spotify track URI `{uri}`: {err}"))?;
-                        spirc.add_to_queue(parsed).map_err(|err| format!("could not add track to queue: {err}"))?;
                     }
                     Some(Control::Search(query)) => spawn_search(session.clone(), query, updates.clone()),
                     Some(Control::RequestArtwork { key, cover_id }) => request_artwork(
