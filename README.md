@@ -2,13 +2,12 @@
   <img src="assets/riff-logo.svg" alt="Riff logo" width="720" />
 
   <p><strong>Music as code. Spotify in your terminal.</strong></p>
-  <p>A terminal-first music player written in Rust, designed around declarative, versionable playlists.</p>
+  <p>A terminal-first music player written in Rust, built around declarative, versionable playlists.</p>
 
   <p>
     <a href="https://github.com/Nicolas25vlad/riff/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI" src="https://github.com/Nicolas25vlad/riff/actions/workflows/ci.yml/badge.svg?branch=main" /></a>
     <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-orange?logo=rust" />
     <img alt="License" src="https://img.shields.io/github/license/Nicolas25vlad/riff" />
-    <img alt="Status" src="https://img.shields.io/badge/status-early%20development-yellow" />
   </p>
 </div>
 
@@ -16,28 +15,25 @@
 
 ## Install
 
-On Linux, install the latest build from `main` in one command:
+The published Cargo package is `riff-music`; the installed command is still `riff`.
+
+```bash
+cargo install riff-music
+```
+
+Or install the current GitHub build on Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nicolas25vlad/riff/main/install.sh | bash
 ```
 
-Then:
+See [INSTALL.md](INSTALL.md) for native audio dependencies, Windows installation and source builds.
 
-```bash
-riff doctor
-riff player
-```
+Spotify playback requires Spotify Premium.
 
-The installer provisions the native audio build dependencies on supported Linux distributions when needed. If Fish cannot find the binary after installation, run `fish_add_path $HOME/.cargo/bin` once.
+## Music as code
 
-For manual installation, updates, distro dependencies and building from source, see [INSTALL.md](INSTALL.md).
-
-## What is Riff?
-
-Riff treats your music library the way developers treat infrastructure and configuration.
-
-Instead of building every playlist by clicking through a GUI, you describe it in a small text format, keep it beside your dotfiles, review changes with `git diff`, share it on GitHub, and let Riff grow into the runtime that resolves and plays those definitions.
+A `.riff` file is the source of truth:
 
 ```riff
 playlist "coding-metal" {
@@ -48,72 +44,88 @@ playlist "coding-metal" {
 }
 ```
 
-```console
-$ riff validate examples/coding-metal.riff
-✓ coding-metal is valid (4 tracks)
+For deterministic playback you can pin the provider ID:
 
-$ riff inspect examples/coding-metal.riff
-coding-metal
-4 tracks
-
-  1. Black Sabbath - War Pigs
-  2. Dio - Holy Diver
-  3. Metallica - Orion
-  4. Megadeth - Tornado of Souls
+```riff
+track "Black Sabbath - War Pigs" id="spotify:track:..."
 ```
 
-## First playback
-
-Riff now has the first headless Spotify playback core built on `librespot`.
-
-Start a local Spotify Connect device:
+Validate, inspect and play the same file from the terminal:
 
 ```bash
-riff player
+riff validate examples/coding-metal.riff
+riff inspect examples/coding-metal.riff
+riff play examples/coding-metal.riff
+riff tui examples/coding-metal.riff
 ```
 
-On first run, Riff opens Spotify authorization in your browser and caches the resulting session under your XDG cache directory. Once it reports that the player is online, choose **Riff** from Spotify Connect.
+## Workbench TUI
 
-You can also start with a Spotify context URI:
+`riff tui <file.riff>` is the primary interactive experience. The Workbench currently has five views:
 
-```bash
-riff player 'spotify:album:1ATL5GLyefJaxhQzSPVrLX'
-```
+- **Now Playing**: artwork, metadata, transport state, progress, volume, shuffle and repeat.
+- **Search**: fuzzy Spotify search, preview/play and exact-ID insertion into the current `.riff` file.
+- **Playlist**: the declarative queue generated from the current file.
+- **Lyrics**: synchronized lyrics when Spotify exposes them.
+- **Editor**: a built-in nano-like editor with parser validation before save.
 
-Spotify playback requires Premium. Directly resolving the textual tracks in a `.riff` file into Spotify tracks is the next provider/queue milestone, so the playlist DSL and player are still separate surfaces in this version.
+The TUI owns the terminal framebuffer. Normal operation writes no logs to stdout/stderr. If `RIFF_LOG` is set, Workbench diagnostics are appended to `riff-tui.log` under Riff's platform cache directory instead of being painted over the UI.
 
-## Why?
+Startup now shows a real spinner while Riff connects to Spotify and resolves playlist metadata. Resolution results are cached persistently, so reopening the same unpinned playlist can reuse already-resolved Spotify track IDs.
 
-- **Playlists as source code**: readable text files with deterministic ordering.
-- **Git-native music libraries**: branch, diff, review, fork and share playlists like code.
-- **Terminal-first playback**: a headless player today, interactive TUI next.
-- **Native Spotify playback**: `librespot` provides local audio and Spotify Connect.
-- **Rich terminal UI**: album artwork, queue management, playback state and audio visualization are tracked milestones.
-- **Provider-independent core**: Spotify first, without permanently coupling the language to Spotify.
+### Default controls
 
-## Vision
+| Action | Keys |
+| --- | --- |
+| Next / previous view | `Tab` / `Shift+Tab` |
+| Direct views | `Alt+1` … `Alt+5` |
+| Play / pause | `Space` |
+| Next / previous track | `n` / `p`, `l` / `h`, arrows |
+| Volume | `+` / `-` in 5 percentage-point steps |
+| Seek | `[` / `]` in 5 second steps |
+| Shuffle / repeat | `s` / `r` |
+| Search / Editor / Lyrics | `/` / `e` / `y` |
+| Cycle theme | `F6` |
+| Quit | `q` / `Esc` |
+
+Mouse input is contextual: scrolling Search moves through results; scrolling over the volume gauge changes volume; unrelated areas do not unexpectedly change audio. Clicking the progress bar seeks and the transport controls are clickable.
+
+## Spotify resolution and search
+
+Riff uses librespot's internal Spotify search surface rather than the public Web API. Search fetches a broad candidate pool, ranks title/artist/token similarity, preserves distinct versions, and penalizes likely live/remaster/re-record/compilation variants when a canonical match is equally strong.
+
+That ranking can only choose among candidates Spotify's internal search returns. Riff cannot discover a version that upstream search never exposes, so ambiguous titles may still benefit from `riff pick` and a pinned `spotify:track:` ID.
+
+Repeated unpinned resolutions are stored in a versioned persistent cache. Pinned IDs always bypass fuzzy resolution.
+
+## Useful commands
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│ RIFF                                              03:21 / 07:57│
-├──────────────────────┬───────────────────────────────────────┤
-│                      │ Black Sabbath                         │
-│    [ album art ]     │ War Pigs                              │
-│                      │ Paranoid                              │
-│                      │                                       │
-│                      │ ▁▂▃▅▇▅▃▂▂▃▆██▆▄▃▂▁▂▅▇██▅▂           │
-├──────────────────────┴───────────────────────────────────────┤
-│ Queue                                                        │
-│ > War Pigs                                                   │
-│   Holy Diver                                                 │
-│   Orion                                                      │
-│   Tornado of Souls                                           │
-├──────────────────────────────────────────────────────────────┤
-│ j/k move   space pause   n next   / search   : command       │
-└──────────────────────────────────────────────────────────────┘
+riff init [file]
+riff doctor
+riff validate <file>
+riff inspect <file>
+riff play <file.riff>
+riff search <query>
+riff inspect-track <query-or-uri>
+riff pick <query>
+riff player [spotify-uri]
+riff tui <file.riff>
 ```
 
-The architecture is growing toward a decoded PCM path shared by playback and visualization:
+## Quality gates
+
+Riff treats terminal UX as product behavior, not just decoration. Pull requests run:
+
+- Linux formatting, Clippy, tests, `cargo check` and CLI smoke tests;
+- Windows 11 formatting, Clippy, tests, `cargo check` and CLI smoke tests;
+- a dedicated **TUI quality gate** that rejects direct Workbench stdout/stderr writes, enforces terminal/logging invariants, exercises semantic input/hitboxes and renders wide/compact layouts with Ratatui's virtual `TestBackend`;
+- Remote Lab release builds for Linux and Windows with downloadable artifacts;
+- crates.io package dry-runs when packaging metadata changes.
+
+`Cargo.lock` is committed and CI, installers, Remote Lab and release publishing use locked dependency resolution for reproducible application builds.
+
+## Architecture
 
 ```text
 .riff files
@@ -121,206 +133,46 @@ The architecture is growing toward a decoded PCM path shared by playback and vis
     ▼
  parser / AST
     │
-    ▼
- playlist engine ───────► provider resolution
+    ├──────────────► persistent resolution cache
+    │                         │
+    ▼                         ▼
+ playlist engine ───────► Spotify resolution
                               │
                               ▼
                            librespot
                               │
-                           decoded PCM
-                           ╱         ╲
-                          ▼           ▼
-                    audio output   FFT/analyzer
-                                      │
-                                      ▼
-                                  visualizer
+                    playback / metadata / lyrics
+                              │
+                              ▼
+                       Ratatui Workbench
 ```
 
-## Current status
-
-Riff is in **early development**, but it now crosses the line from DSL prototype into an actual player foundation:
-
-- `riff player [spotify-uri]` starts a local Spotify Connect player;
-- OAuth login with cached credentials/session data;
-- local Rodio/ALSA audio output on Linux;
-- XDG-compatible Spotify cache directory;
-- `riff init [file]`;
-- `riff doctor`;
-- `riff validate <file>`;
-- `riff inspect <file>`;
-- the first `.riff` playlist parser and tests;
-- CI for installer syntax, formatting, Clippy, tests and `cargo check`.
-
-The next playback step is provider resolution: turning `track "Artist - Song"` into concrete Spotify IDs and feeding the Riff queue.
-
-## Planned playlist language
-
-The current implementation supports explicit `track` statements. The language is intended to grow toward reproducible selection rules:
-
-```riff
-playlist "night-shift" {
-    add artist("Black Sabbath").top(8)
-    add album("Holy Diver", by="Dio")
-
-    add artist("Megadeth")
-        .take(5)
-        .shuffle(seed=666)
-
-    exclude live
-    exclude acoustic
-}
-```
-
-Eventually Riff should preview changes before applying them:
-
-```diff
-coding-metal
-
-+ Dio - Holy Diver
-+ Black Sabbath - Supernaut
-- Metallica - Fuel
-
-Plan: 2 to add, 1 to remove, 4 to reorder
-```
-
-Yes, the aspiration is essentially **Terraform for playlists**, with significantly more guitar riffs.
-
-## CLI
-
-Available in the v0.2 player foundation:
-
-```text
-riff player [spotify-uri]
-riff init [file]
-riff doctor
-riff validate <file>
-riff inspect <file>
-riff help
-riff version
-```
-
-Planned:
-
-```text
-riff play <file.riff>
-riff pause
-riff next
-riff previous
-riff search <query>
-riff queue add <query>
-riff status
-riff plan
-riff apply
-riff tui
-```
-
-## Architecture
-
-Riff is intentionally still a single crate while its public concepts settle. The intended evolution is roughly:
-
-```text
-riff/
-├── riff-cli          command-line interface
-├── riff-core         playback state, queue and domain model
-├── riff-lang         lexer, parser and playlist AST
-├── riff-provider     provider abstraction
-├── riff-spotify      Spotify/librespot integration
-├── riff-audio        PCM pipeline and audio output
-├── riff-visualizer   FFT, spectrum, waveform and meters
-├── riff-image        terminal image protocols and fallbacks
-└── riff-tui          Ratatui application
-```
-
-| Area | Direction |
-| --- | --- |
-| Language | Rust |
-| Spotify playback | librespot |
-| Terminal UI | Ratatui + Crossterm |
-| Async runtime | Tokio |
-| Local state/cache | XDG paths, SQLite later if needed |
-| Audio analysis | FFT over decoded PCM |
-| Cover art | Kitty graphics / Sixel / Unicode fallback |
-| Playlist language | custom parser + typed AST |
+Riff intentionally remains one Rust crate while its public concepts settle. Provider concerns stay isolated from the playlist language so future local/MPD/Navidrome-style providers do not require rewriting `.riff` syntax.
 
 ## Roadmap
 
-### v0.1 · Foundation
+Near-term work is tracked in GitHub issues. Major remaining areas include incremental resolution of very large playlists, more resilient streaming on weak connections, queue/runtime synchronization, the visualizer pipeline, richer playlist language and `plan/apply` workflows.
 
-- [x] Project identity and documentation
-- [x] Minimal CLI
-- [x] One-line Linux installer
-- [x] First `.riff` parser
-- [x] Playlist validation and inspection
-- [x] Unit tests and CI
-- [ ] Formal grammar
-- [ ] Diagnostics with line/column information
-
-### v0.2 · Spotify core
-
-- [x] Authentication/session foundation
-- [x] `librespot` playback core
-- [x] Spotify Connect device mode
-- [ ] Track search and metadata resolution
-- [ ] Riff-owned queue and play/pause/seek/next/previous commands
-
-### v0.3 · Terminal player
-
-- [ ] Ratatui interface
-- [ ] Queue browser
-- [ ] Search view
-- [ ] Album artwork
-- [ ] Configurable keybindings
-
-### v0.4 · Audio candy
-
-- [ ] PCM analysis pipeline
-- [ ] Spectrum visualizer
-- [ ] Waveform / oscilloscope mode
-- [ ] VU meter
-- [ ] Theme extraction from album covers
-
-### v0.5 · Music as code
-
-- [ ] Expressions and reusable playlist fragments
-- [ ] Deterministic shuffle seeds
-- [ ] Filters and exclusions
-- [ ] Imports
-- [ ] Provider-independent track references
-- [ ] `riff plan`
-- [ ] `riff apply`
-
-## Development roadmap
-
-The implementation is tracked as focused GitHub issues instead of one giant mega-PR:
-
-- **#5** Spotify playback core
-- **#6** Spotify metadata/provider resolution
-- **#7** Ratatui terminal interface
-- **#8** decoded-PCM visualizer pipeline
-- **#9** terminal album artwork
-- **#10** queue/autoplay and `.riff` playback integration
-- **#11** runtime configuration and audio backend selection
+The long-term idea remains pleasantly unreasonable: **Terraform for playlists, with more guitar riffs.**
 
 ## Design principles
 
-1. **Terminal first, not terminal only.** The CLI stays scriptable even when the TUI becomes rich.
-2. **Text files are the source of truth.** A playlist should be understandable without launching Riff.
-3. **Determinism where possible.** Definitions should be reproducible enough to meaningfully version.
-4. **Fast startup matters.** A terminal player that feels heavy has missed the point.
+1. **The TUI is a product surface.** Terminal ownership, responsiveness and predictable controls are release criteria.
+2. **Text files are the source of truth.** Visual editing must produce understandable `.riff` files.
+3. **Determinism where possible.** Exact provider IDs and locked application dependencies keep important behavior reproducible.
+4. **Fast startup matters.** Cache work already done and avoid blocking playback on work that can happen later.
 5. **Keep provider concerns isolated.** The language describes music, not Spotify internals.
-6. **No architecture cosplay.** Abstractions appear when they solve real problems.
+6. **No architecture cosplay.** Abstractions appear when they solve a real problem.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests run the full quality gate automatically, and ownership rules live in `.github/CODEOWNERS`.
-
-For security reports, see [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). For security reports, see [SECURITY.md](SECURITY.md).
 
 ## Disclaimer
 
 Riff is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Spotify AB. Spotify is a trademark of Spotify AB.
 
-Spotify playback uses `librespot` and requires Spotify Premium. Compatibility depends on Spotify's services and upstream `librespot` behavior.
+Spotify playback uses `librespot`. Compatibility depends on Spotify's services and upstream librespot behavior.
 
 ## License
 
