@@ -462,6 +462,12 @@ fn play_selected_search(workbench: &mut Workbench, controls: &mpsc::UnboundedSen
 }
 
 fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> {
+    if workbench.editor.dirty {
+        workbench.state.message =
+            "save or discard editor changes before adding tracks from Search".into();
+        return Ok(());
+    }
+
     let Some(item) = workbench.state.search.selected().cloned() else {
         return Ok(());
     };
@@ -500,9 +506,7 @@ fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> 
 
     workbench.state.queue.push(item.clone());
     workbench.state.git = git_context::detect(&workbench.state.file_path);
-    if !workbench.editor.dirty {
-        workbench.editor = EditorState::load(&workbench.state.file_path)?;
-    }
+    workbench.editor = EditorState::load(&workbench.state.file_path)?;
     workbench.state.message = format!("added to {} · {}", workbench.state.file_name, item.label());
     Ok(())
 }
