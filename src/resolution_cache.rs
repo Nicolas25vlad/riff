@@ -14,8 +14,11 @@ pub struct ResolutionCache {
 
 impl ResolutionCache {
     pub fn load_default() -> Result<Self, String> {
-        let path = platform::riff_cache_dir()?.join("resolution-v1.tsv");
-        Ok(Self::load(path))
+        let root = platform::riff_cache_dir()?;
+        fs::create_dir_all(&root)
+            .map_err(|err| format!("could not create Riff cache directory: {err}"))?;
+        platform::secure_cache_dir(&root)?;
+        Ok(Self::load(root.join("resolution-v1.tsv")))
     }
 
     pub fn load(path: PathBuf) -> Self {
@@ -100,7 +103,6 @@ impl ResolutionCache {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|err| format!("could not create resolution cache directory: {err}"))?;
-            platform::secure_cache_dir(parent)?;
         }
 
         let mut source = String::from(FORMAT_HEADER);
@@ -117,11 +119,8 @@ impl ResolutionCache {
             source.push('\n');
         }
 
-        let temporary = self.path.with_extension("tmp");
-        fs::write(&temporary, source)
+        fs::write(&self.path, source)
             .map_err(|err| format!("could not write resolution cache: {err}"))?;
-        fs::rename(&temporary, &self.path)
-            .map_err(|err| format!("could not replace resolution cache: {err}"))?;
         self.dirty = false;
         Ok(())
     }
