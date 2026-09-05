@@ -21,7 +21,7 @@ use librespot::{
         player::{Player, PlayerEvent},
     },
 };
-use riff::{Playlist, platform, player};
+use riff::{Playlist, platform, player, resolution_cache::ResolutionCache};
 use tokio::sync::{Mutex, mpsc};
 
 use super::model::{LyricsLine, PlaybackStatus, QueueItem};
@@ -96,22 +96,64 @@ pub async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String
         .await
         .map_err(|err| format!("could not connect to Spotify for TUI metadata: {err}"))?;
 
+    let mut resolution_cache = ResolutionCache::load_default().ok();
     let mut queue = Vec::with_capacity(playlist.tracks.len());
-    for request in &playlist.tracks {
-        let uri = if let Some(uri) = request.id.as_deref() {
-            uri.to_string()
-        } else {
-            player::search(&request.label, 1)
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| format!("no confident Spotify track found for `{}`", request.label))?
-                .uri
-        };
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
 
-        queue.push(queue_item_from_uri(&session, &uri).await?);
+    for request in &playlist.tracks {
+        if let Some(uri) = request.id.as_deref() {
+            queue.push(queue_item_from_uri(&session, uri).await?);
+            continue;
+        }
+
+        if let Some(uri) = resolution_cache
+            .as_ref()
+            .and_then(|cache| cache.spotify(&request.label))
+            .map(str::to_string)
+        {
+            match queue_item_from_uri(&session, &uri).await {
+                Ok(item) => {
+                    cache_hits += 1;
+                    queue.push(item);
+                    continue;
+                }
+                Err(error) => {
+                    log::debug!(
+                        "discarding stale resolution cache entry `{}`: {error}",
+                        request.label
+                    );
+                    if let Some(cache) = resolution_cache.as_mut() {
+                        cache.remove_spotify(&request.label);
+                    }
+                }
+            }
+        }
+
+        cache_misses += 1;
+        let candidate = player::search_in_session(
+            &session,
+            &request.label,
+            1,
+            false,
+            riff::fuzzy::DEFAULT_THRESHOLD,
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no confident Spotify track found for `{}`", request.label))?;
+        if let Some(cache) = resolution_cache.as_mut() {
+            cache.insert_spotify(&request.label, &candidate.uri);
+        }
+        queue.push(queue_item_from_candidate(candidate)?);
     }
 
+    if let Some(cache) = resolution_cache.as_mut()
+        && let Err(error) = cache.save()
+    {
+        log::warn!("resolution cache could not be saved: {error}");
+    }
+    log::debug!("Workbench resolution cache: {cache_hits} hit(s), {cache_misses} miss(es)");
     session.shutdown();
     Ok(queue)
 }
@@ -242,7 +284,15 @@ pub async fn run_player(
 
 fn spawn_search(session: Session, query: String, updates: mpsc::UnboundedSender<PlayerUpdate>) {
     tokio::spawn(async move {
-        let candidates = match player::search(&query, 20).await {
+        let candidates = match player::search_in_session(
+            &session,
+            &query,
+            20,
+            false,
+            riff::fuzzy::DEFAULT_THRESHOLD,
+        )
+        .await
+        {
             Ok(candidates) => candidates,
             Err(error) => {
                 let _ = updates.send(PlayerUpdate::SearchError { query, error });
@@ -252,15 +302,8 @@ fn spawn_search(session: Session, query: String, updates: mpsc::UnboundedSender<
 
         let mut results = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let score = candidate
-                .metadata
-                .get("match")
-                .and_then(|value| value.parse::<u8>().ok());
-            match queue_item_from_uri(&session, &candidate.uri).await {
-                Ok(mut item) => {
-                    item.match_score = score;
-                    results.push(item);
-                }
+            match queue_item_from_candidate(candidate) {
+                Ok(item) => results.push(item),
                 Err(error) => {
                     let _ = updates.send(PlayerUpdate::SearchError {
                         query: query.clone(),
@@ -272,6 +315,36 @@ fn spawn_search(session: Session, query: String, updates: mpsc::UnboundedSender<
         }
         let _ = updates.send(PlayerUpdate::SearchResults { query, results });
     });
+}
+
+fn queue_item_from_candidate(candidate: player::SearchCandidate) -> Result<QueueItem, String> {
+    let metadata = &candidate.metadata;
+    let title = metadata.get("title").cloned().ok_or_else(|| {
+        format!(
+            "search result `{}` is missing title metadata",
+            candidate.uri
+        )
+    })?;
+    let artist = metadata.get("artist").cloned().unwrap_or_default();
+    let album = metadata.get("album").cloned().unwrap_or_default();
+    let duration_ms = metadata
+        .get("duration_ms")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let match_score = metadata
+        .get("match")
+        .and_then(|value| value.parse::<u8>().ok());
+
+    Ok(QueueItem {
+        title,
+        artist,
+        album,
+        version: metadata.get("version").cloned(),
+        uri: candidate.uri,
+        duration_ms,
+        cover_id: metadata.get("cover_id").cloned(),
+        match_score,
+    })
 }
 
 async fn queue_item_from_uri(session: &Session, uri: &str) -> Result<QueueItem, String> {

@@ -3,6 +3,7 @@ use std::{fmt, fs, io, io::Write, path::PathBuf};
 pub mod fuzzy;
 pub mod platform;
 pub mod player;
+pub mod resolution_cache;
 
 const DEFAULT_PLAYLIST: &str = r#"playlist "my-playlist" {
     track "Black Sabbath - War Pigs"

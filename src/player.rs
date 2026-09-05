@@ -8,6 +8,7 @@ use std::{
 use crate::{
     fuzzy::{DEFAULT_THRESHOLD, rank_candidates},
     platform,
+    resolution_cache::ResolutionCache,
 };
 use env_logger::Env;
 use librespot::{
@@ -32,7 +33,7 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
-const FUZZY_CANDIDATE_POOL: usize = 30;
+const FUZZY_CANDIDATE_POOL: usize = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackRequest {
@@ -162,9 +163,19 @@ pub async fn search_advanced(
     threshold: u8,
 ) -> Result<Vec<SearchCandidate>, String> {
     let session = discovery_session().await?;
-    let result = smart_search_with_session(&session, query, limit, exact, threshold).await;
+    let result = search_in_session(&session, query, limit, exact, threshold).await;
     session.shutdown();
     result
+}
+
+pub async fn search_in_session(
+    session: &Session,
+    query: &str,
+    limit: usize,
+    exact: bool,
+    threshold: u8,
+) -> Result<Vec<SearchCandidate>, String> {
+    smart_search_with_session(session, query, limit, exact, threshold).await
 }
 
 pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
@@ -180,6 +191,9 @@ pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
 
 async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Vec<String>, String> {
     let mut resolved = Vec::with_capacity(tracks.len());
+    let mut cache = ResolutionCache::load_default().ok();
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
 
     for (index, track) in tracks.iter().enumerate() {
         if let Some(uri) = track.id.as_deref() {
@@ -195,18 +209,42 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             continue;
         }
 
+        if let Some(uri) = cache
+            .as_ref()
+            .and_then(|cache| cache.spotify(&track.label))
+            .map(str::to_string)
+            .filter(|uri| is_spotify_track_uri(uri))
+        {
+            let valid = match SpotifyUri::from_uri(&uri) {
+                Ok(spotify_uri) => SpotifyTrack::get(session, &spotify_uri).await.is_ok(),
+                Err(_) => false,
+            };
+            if valid {
+                cache_hits += 1;
+                println!("  [{}/{}] cached {}", index + 1, tracks.len(), track.label);
+                println!("       -> {uri}");
+                resolved.push(uri);
+                continue;
+            }
+            log::debug!("discarding stale resolution cache entry `{}`", track.label);
+            if let Some(cache) = cache.as_mut() {
+                cache.remove_spotify(&track.label);
+            }
+        }
+
+        cache_misses += 1;
         println!(
             "  [{}/{}] resolving {}",
             index + 1,
             tracks.len(),
             track.label
         );
-        let candidates =
-            smart_search_with_session(session, &track.label, 1, false, DEFAULT_THRESHOLD).await?;
-        let candidate = candidates
-            .into_iter()
-            .next()
-            .ok_or_else(|| format!("no confident Spotify track found for `{}`", track.label))?;
+        let candidate =
+            smart_search_with_session(session, &track.label, 1, false, DEFAULT_THRESHOLD)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| format!("no confident Spotify track found for `{}`", track.label))?;
         let confidence = candidate
             .metadata
             .get("match")
@@ -217,9 +255,18 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             candidate.display_name(),
             candidate.uri
         );
+        if let Some(cache) = cache.as_mut() {
+            cache.insert_spotify(&track.label, &candidate.uri);
+        }
         resolved.push(candidate.uri);
     }
 
+    if let Some(cache) = cache.as_mut()
+        && let Err(error) = cache.save()
+    {
+        log::warn!("resolution cache could not be saved: {error}");
+    }
+    log::debug!("resolution cache: {cache_hits} hit(s), {cache_misses} miss(es)");
     Ok(resolved)
 }
 
@@ -264,11 +311,29 @@ async fn smart_search_with_session(
     exact: bool,
     threshold: u8,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let pool_size = FUZZY_CANDIDATE_POOL.max(limit.saturating_mul(3));
+    let pool_size = FUZZY_CANDIDATE_POOL.max(limit.saturating_mul(4));
     let raw = search_with_session(session, query, pool_size).await?;
     let mut ranked = rank_candidates(query, raw, exact, threshold);
     ranked.truncate(limit);
     Ok(ranked)
+}
+
+fn query_variants(query: &str) -> Vec<String> {
+    let query = query.trim();
+    let mut variants = Vec::new();
+    if !query.is_empty() {
+        variants.push(query.to_string());
+    }
+    if let Some((artist, title)) = query.split_once(" - ") {
+        let artist = artist.trim();
+        let title = title.trim();
+        if !artist.is_empty() && !title.is_empty() {
+            variants.push(format!("{title} {artist}"));
+            variants.push(title.to_string());
+        }
+    }
+    variants.dedup();
+    variants
 }
 
 async fn search_with_session(
@@ -276,6 +341,39 @@ async fn search_with_session(
     query: &str,
     limit: usize,
 ) -> Result<Vec<SearchCandidate>, String> {
+    let mut raw_by_uri = BTreeMap::<String, BTreeMap<String, String>>::new();
+    for (index, variant) in query_variants(query).into_iter().enumerate() {
+        let per_variant = if index == 0 {
+            limit.clamp(1, 36)
+        } else {
+            limit.clamp(1, 12)
+        };
+        match raw_search_with_session(session, &variant, per_variant).await {
+            Ok(raw) => {
+                for (uri, metadata) in raw {
+                    raw_by_uri.entry(uri).or_insert(metadata);
+                }
+            }
+            Err(error) if index == 0 => return Err(error),
+            Err(error) => {
+                log::debug!("secondary Spotify search variant `{variant}` failed: {error}")
+            }
+        }
+    }
+
+    let enrichment_cap = limit.saturating_add(12);
+    let mut candidates = Vec::with_capacity(raw_by_uri.len().min(enrichment_cap));
+    for (uri, metadata) in raw_by_uri.into_iter().take(enrichment_cap) {
+        candidates.push(enrich_candidate(session, uri, metadata).await?);
+    }
+    Ok(candidates)
+}
+
+async fn raw_search_with_session(
+    session: &Session,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(String, BTreeMap<String, String>)>, String> {
     let search_uri = spotify_search_uri(query);
     let context = session
         .spclient()
@@ -291,14 +389,7 @@ async fn search_with_session(
         if !is_spotify_track_uri(&uri) {
             continue;
         }
-
-        let candidate = enrich_candidate(
-            session,
-            uri,
-            track.metadata.into_iter().collect::<BTreeMap<_, _>>(),
-        )
-        .await?;
-        candidates.push(candidate);
+        candidates.push((uri, track.metadata.into_iter().collect::<BTreeMap<_, _>>()));
         if candidates.len() == limit {
             break;
         }
@@ -329,7 +420,16 @@ async fn enrich_candidate(
     );
     metadata.insert("album".into(), track.album.name.clone());
     metadata.insert("duration".into(), format_duration(track.duration));
+    metadata.insert("duration_ms".into(), track.duration.max(0).to_string());
     metadata.insert("popularity".into(), track.popularity.to_string());
+    if let Some(cover) = track
+        .album
+        .covers
+        .iter()
+        .max_by_key(|cover| cover.width.saturating_mul(cover.height))
+    {
+        metadata.insert("cover_id".into(), cover.id.to_string());
+    }
 
     if !track.version_title.trim().is_empty() {
         metadata.insert("version".into(), track.version_title.clone());
@@ -460,5 +560,18 @@ mod tests {
     #[test]
     fn formats_track_duration() {
         assert_eq!(format_duration(475_000), "7:55");
+    }
+
+    #[test]
+    fn broadens_artist_dash_title_queries_without_hardcoding_music() {
+        assert_eq!(
+            query_variants("Artist Name - Song Name"),
+            vec![
+                "Artist Name - Song Name".to_string(),
+                "Song Name Artist Name".to_string(),
+                "Song Name".to_string(),
+            ]
+        );
+        assert_eq!(query_variants("Song Name"), vec!["Song Name".to_string()]);
     }
 }

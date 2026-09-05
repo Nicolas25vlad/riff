@@ -218,15 +218,7 @@ fn draw_loading(frame: &mut Frame<'_>, workbench: &Workbench, tick: usize) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(format!(
-            "resolving {} track{} · Spotify session + metadata",
-            workbench.state.playlist_name,
-            if workbench.state.queue.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        )),
+        Line::from("resolving playlist · cache + Spotify metadata"),
     ];
     frame.render_widget(
         Paragraph::new(lines)

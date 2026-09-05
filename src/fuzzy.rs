@@ -179,6 +179,12 @@ fn version_penalty(candidate: &SearchCandidate) -> u8 {
         "instrumental",
         "radio edit",
         "re-record",
+        "greatest hits",
+        "best of",
+        "anthology",
+        "collection",
+        "compilation",
+        "essentials",
     ]
     .iter()
     .filter(|marker| haystack.contains(**marker))
@@ -237,5 +243,32 @@ mod tests {
     #[test]
     fn normalizes_punctuation_and_case() {
         assert_eq!(normalize("WAR-PIGS!!"), "war pigs");
+    }
+
+    #[test]
+    fn canonical_album_beats_compilation_when_match_is_equal() {
+        let mut canonical = candidate("Example Song", "Example Artist");
+        canonical
+            .metadata
+            .insert("album".into(), "Original Album".into());
+        let mut compilation = candidate("Example Song", "Example Artist");
+        compilation.uri = "spotify:track:compilation".into();
+        compilation
+            .metadata
+            .insert("album".into(), "Example Artist Greatest Hits".into());
+        compilation
+            .metadata
+            .insert("popularity".into(), "99".into());
+
+        let ranked = rank_candidates(
+            "Example Artist Example Song",
+            vec![compilation, canonical.clone()],
+            false,
+            DEFAULT_THRESHOLD,
+        );
+        assert_eq!(
+            ranked.first().map(|item| item.uri.as_str()),
+            Some(canonical.uri.as_str())
+        );
     }
 }

@@ -42,12 +42,9 @@ impl ResolutionCache {
         let mut entries = BTreeMap::new();
         for line in lines {
             let mut fields = line.split('\t');
-            let (Some(provider), Some(label), Some(uri), None) = (
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-            ) else {
+            let (Some(provider), Some(label), Some(uri), None) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
                 continue;
             };
             if provider.is_empty() || label.is_empty() || uri.is_empty() {
@@ -127,7 +124,11 @@ impl ResolutionCache {
 }
 
 fn cache_key(provider: &str, label: &str) -> String {
-    format!("{}\t{}", provider.trim().to_ascii_lowercase(), normalize(label))
+    format!(
+        "{}\t{}",
+        provider.trim().to_ascii_lowercase(),
+        normalize(label)
+    )
 }
 
 #[cfg(test)]
