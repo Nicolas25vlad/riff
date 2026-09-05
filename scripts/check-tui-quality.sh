@@ -20,6 +20,10 @@ if grep -RIn 'env_logger' src/workbench --include='*.rs'; then
   fail 'Workbench must not initialize env_logger directly.'
 fi
 
+if ! grep -q 'TerminalGuard::enter' src/workbench/mod.rs; then
+  fail 'Workbench must enter fullscreen mode through the crash-safe TerminalGuard.'
+fi
+
 # Mouse wheel actions are contextual: Search navigates, volume only changes over its gauge.
 python - <<'PY'
 from pathlib import Path

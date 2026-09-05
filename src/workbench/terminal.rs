@@ -11,7 +11,8 @@ pub struct TerminalGuard;
 
 impl TerminalGuard {
     pub fn enter() -> Result<Self, String> {
-        enable_raw_mode().map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
+        enable_raw_mode()
+            .map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
 
         let mut stdout = io::stdout();
         if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide) {

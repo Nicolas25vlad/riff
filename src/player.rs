@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fs};
+use std::{
+    collections::BTreeMap,
+    env,
+    fs::{self, OpenOptions},
+    path::PathBuf,
+};
 
 use crate::{
     fuzzy::{DEFAULT_THRESHOLD, rank_candidates},
@@ -371,6 +376,34 @@ fn spotify_search_uri(query: &str) -> String {
 pub fn init_cli_logging() {
     let env = Env::default().filter_or("RIFF_LOG", "riff=info,librespot=info");
     let _ = env_logger::Builder::from_env(env).try_init();
+}
+
+pub fn init_tui_logging() -> Result<Option<PathBuf>, String> {
+    if env::var_os("RIFF_LOG").is_none() {
+        return Ok(None);
+    }
+
+    let log_dir = platform::riff_cache_dir()?.join("logs");
+    fs::create_dir_all(&log_dir)
+        .map_err(|err| format!("could not create Riff log directory: {err}"))?;
+    platform::secure_cache_dir(&log_dir)?;
+    let log_path = log_dir.join("tui.log");
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|err| format!("could not open TUI log file: {err}"))?;
+
+    let env = Env::default().filter_or("RIFF_LOG", "riff=debug,librespot=info");
+    let mut builder = env_logger::Builder::from_env(env);
+    builder
+        .target(env_logger::Target::Pipe(Box::new(file)))
+        .format_timestamp_millis();
+    builder
+        .try_init()
+        .map_err(|err| format!("could not initialize TUI file logging: {err}"))?;
+    log::info!("Riff Workbench logging started at {}", log_path.display());
+    Ok(Some(log_path))
 }
 
 fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {

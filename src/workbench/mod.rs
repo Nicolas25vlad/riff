@@ -1,18 +1,23 @@
+mod actions;
 mod editor;
 mod git_context;
 mod model;
 mod player_task;
+mod terminal;
 mod theme;
+mod volume;
 
-use std::{collections::HashMap, fs, io, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs, io,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-    },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use image::DynamicImage;
 use ratatui::{
@@ -27,9 +32,11 @@ use ratatui_image::{Image as TerminalImage, Resize, picker::Picker, protocol::Pr
 use riff::Playlist;
 use tokio::sync::mpsc;
 
+use actions::{Action, from_key as action_from_key};
 use editor::EditorState;
 use model::{AppState, HitMap, LyricsState, PlaybackStatus, QueueItem, SearchState, View};
 use player_task::{Control, PlayerUpdate};
+use terminal::TerminalGuard;
 use theme::Theme;
 
 const WIDE_ART_SIZE: Size = Size::new(28, 14);
@@ -37,6 +44,7 @@ const COMPACT_ART_SIZE: Size = Size::new(18, 9);
 const SEARCH_ART_SIZE: Size = Size::new(22, 11);
 const VOLUME_MAX: u16 = u16::MAX;
 const SEEK_STEP_MS: u32 = 5_000;
+const VOLUME_FLUSH_INTERVAL: Duration = Duration::from_millis(60);
 
 struct RenderedArtwork {
     wide: Protocol,
@@ -49,13 +57,15 @@ struct Workbench {
     editor: EditorState,
     artwork: HashMap<String, RenderedArtwork>,
     artwork_pending: HashMap<String, bool>,
+    pending_volume: Option<u16>,
+    volume_target: Option<u16>,
+    last_volume_flush: Instant,
 }
 
 pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     if playlist.tracks.is_empty() {
         return Err("playlist has no tracks to play".to_string());
     }
-    let queue = player_task::resolve_queue(&playlist).await?;
     let editor = EditorState::load(&file_path)?;
     let file_name = file_path
         .file_name()
@@ -65,8 +75,8 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     let state = AppState {
         file_path: file_path.clone(),
         file_name,
-        playlist_name: playlist.name,
-        queue: queue.clone(),
+        playlist_name: playlist.name.clone(),
+        queue: Vec::new(),
         transient_current: None,
         status: PlaybackStatus::Starting,
         current_uri: None,
@@ -74,7 +84,7 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         volume: VOLUME_MAX,
         shuffle: false,
         repeat: false,
-        message: "Connecting to Spotify…".into(),
+        message: "Preparing Workbench…".into(),
         view: View::NowPlaying,
         theme: Theme::from_env(),
         git: git_context::detect(&file_path),
@@ -83,36 +93,21 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         hits: HitMap::default(),
     };
 
-    let (control_tx, control_rx) = mpsc::unbounded_channel();
-    let (update_tx, update_rx) = mpsc::unbounded_channel();
-    let player_task = tokio::spawn(async move {
-        if let Err(error) = player_task::run_player(queue, control_rx, update_tx.clone()).await {
-            let _ = update_tx.send(PlayerUpdate::Error(error));
-        }
-    });
-
     let mut workbench = Workbench {
         state,
         editor,
         artwork: HashMap::new(),
         artwork_pending: HashMap::new(),
+        pending_volume: None,
+        volume_target: None,
+        last_volume_flush: Instant::now() - VOLUME_FLUSH_INTERVAL,
     };
-    let ui_result = run_terminal(&mut workbench, control_tx, update_rx).await;
-    let _ = player_task.await;
-    ui_result
+    run_terminal(&mut workbench, playlist).await
 }
 
-async fn run_terminal(
-    workbench: &mut Workbench,
-    controls: mpsc::UnboundedSender<Control>,
-    mut updates: mpsc::UnboundedReceiver<PlayerUpdate>,
-) -> Result<(), String> {
-    enable_raw_mode().map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-        .map_err(|error| format!("could not enter alternate screen: {error}"))?;
-
-    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+async fn run_terminal(workbench: &mut Workbench, playlist: Playlist) -> Result<(), String> {
+    let _terminal_guard = TerminalGuard::enter()?;
+    let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)
         .map_err(|error| format!("could not initialize terminal UI: {error}"))?;
@@ -120,6 +115,31 @@ async fn run_terminal(
         .clear()
         .map_err(|error| format!("could not clear terminal: {error}"))?;
 
+    let mut spinner_tick = 0usize;
+    let mut resolver = Box::pin(player_task::resolve_queue(&playlist));
+    let queue = loop {
+        terminal
+            .draw(|frame| draw_loading(frame, workbench, spinner_tick))
+            .map_err(|error| format!("could not render Riff startup: {error}"))?;
+        tokio::select! {
+            result = &mut resolver => break result?,
+            _ = tokio::time::sleep(Duration::from_millis(90)) => {
+                spinner_tick = spinner_tick.wrapping_add(1);
+            }
+        }
+    };
+    workbench.state.queue = queue.clone();
+    workbench.state.message = "Connecting to Spotify…".into();
+
+    let (controls, control_rx) = mpsc::unbounded_channel();
+    let (update_tx, mut updates) = mpsc::unbounded_channel();
+    let player_task = tokio::spawn(async move {
+        if let Err(error) = player_task::run_player(queue, control_rx, update_tx.clone()).await {
+            let _ = update_tx.send(PlayerUpdate::Error(error));
+        }
+    });
+
+    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
     let (art_tx, mut art_rx) = mpsc::unbounded_channel::<(String, RenderedArtwork)>();
     request_current_artwork(workbench, &controls);
 
@@ -132,6 +152,7 @@ async fn run_terminal(
                 workbench.artwork.insert(key.clone(), artwork);
                 workbench.artwork_pending.remove(&key);
             }
+            flush_pending_volume(workbench, &controls);
 
             terminal
                 .draw(|frame| draw(frame, workbench))
@@ -159,8 +180,60 @@ async fn run_terminal(
     }
     .await;
 
-    let restore = restore_terminal(&mut terminal);
-    loop_result.and(restore)
+    let _ = controls.send(Control::Quit);
+    let _ = player_task.await;
+    loop_result
+}
+
+fn draw_loading(frame: &mut Frame<'_>, workbench: &Workbench, tick: usize) {
+    const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+    let theme = workbench.state.theme;
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.background).fg(theme.foreground)),
+        frame.area(),
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Riff Workbench ");
+    let inner = block.inner(frame.area());
+    frame.render_widget(block, frame.area());
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(5),
+            Constraint::Percentage(40),
+        ])
+        .split(inner);
+    let lines = vec![
+        Line::from(Span::styled(
+            format!(
+                "{}  preparing {}",
+                SPINNER[tick % SPINNER.len()],
+                workbench.state.file_name
+            ),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "resolving {} track{} · Spotify session + metadata",
+            workbench.state.playlist_name,
+            if workbench.state.queue.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme.foreground)),
+        rows[1],
+    );
 }
 
 fn apply_player_update(
@@ -192,7 +265,17 @@ fn apply_player_update(
             workbench.state.current_uri = Some(uri);
             workbench.state.position_ms = position_ms;
         }
-        PlayerUpdate::Volume(volume) => workbench.state.volume = volume,
+        PlayerUpdate::Volume(volume) => {
+            if let Some(target) = workbench.volume_target {
+                let tolerance = volume::from_percent(1);
+                if target.abs_diff(volume) <= tolerance {
+                    workbench.state.volume = target;
+                    workbench.volume_target = None;
+                }
+            } else {
+                workbench.state.volume = volume;
+            }
+        }
         PlayerUpdate::Shuffle(shuffle) => workbench.state.shuffle = shuffle,
         PlayerUpdate::Repeat(repeat) => workbench.state.repeat = repeat,
         PlayerUpdate::Artwork { key, image } => {
@@ -288,46 +371,50 @@ fn handle_key(
         return Ok(false);
     }
 
-    match key.code {
-        KeyCode::Tab => workbench.state.view = workbench.state.view.next(),
-        KeyCode::BackTab => workbench.state.view = workbench.state.view.previous(),
-        KeyCode::F(6) => {
+    if let Some(action) = action_from_key(key) {
+        return apply_action(workbench, action, controls);
+    }
+    Ok(false)
+}
+
+fn apply_action(
+    workbench: &mut Workbench,
+    action: Action,
+    controls: &mpsc::UnboundedSender<Control>,
+) -> Result<bool, String> {
+    match action {
+        Action::NextView => workbench.state.view = workbench.state.view.next(),
+        Action::PreviousView => workbench.state.view = workbench.state.view.previous(),
+        Action::CycleTheme => {
             workbench.state.theme = workbench.state.theme.next();
             workbench.state.message = format!("theme · {}", workbench.state.theme.name);
         }
-        KeyCode::Char('q') | KeyCode::Esc => {
+        Action::Quit => {
             let _ = controls.send(Control::Quit);
             return Ok(true);
         }
-        KeyCode::Char(' ') => {
+        Action::TogglePlayback => {
             let _ = controls.send(Control::Toggle);
         }
-        KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right => {
+        Action::NextTrack => {
             let _ = controls.send(Control::Next);
         }
-        KeyCode::Char('p') | KeyCode::Char('h') | KeyCode::Left => {
+        Action::PreviousTrack => {
             let _ = controls.send(Control::Previous);
         }
-        KeyCode::Char('+') | KeyCode::Char('=') => {
-            let _ = controls.send(Control::VolumeUp);
+        Action::VolumeUp => adjust_volume(workbench, volume::STEP_PERCENT as i16),
+        Action::VolumeDown => adjust_volume(workbench, -(volume::STEP_PERCENT as i16)),
+        Action::SeekForward => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
+        Action::SeekBackward => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
+        Action::ToggleShuffle => {
+            let _ = controls.send(Control::Shuffle(!workbench.state.shuffle));
         }
-        KeyCode::Char('-') => {
-            let _ = controls.send(Control::VolumeDown);
+        Action::ToggleRepeat => {
+            let _ = controls.send(Control::Repeat(!workbench.state.repeat));
         }
-        KeyCode::Char(']') => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
-        KeyCode::Char('[') => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
-        KeyCode::Char('s') => {
-            let enabled = !workbench.state.shuffle;
-            let _ = controls.send(Control::Shuffle(enabled));
-        }
-        KeyCode::Char('r') => {
-            let enabled = !workbench.state.repeat;
-            let _ = controls.send(Control::Repeat(enabled));
-        }
-        KeyCode::Char('/') => workbench.state.view = View::Search,
-        KeyCode::Char('e') => workbench.state.view = View::Editor,
-        KeyCode::Char('y') => workbench.state.view = View::Lyrics,
-        _ => {}
+        Action::OpenSearch => workbench.state.view = View::Search,
+        Action::OpenEditor => workbench.state.view = View::Editor,
+        Action::OpenLyrics => workbench.state.view = View::Lyrics,
     }
     Ok(false)
 }
@@ -511,6 +598,29 @@ fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> 
     Ok(())
 }
 
+fn queue_volume(workbench: &mut Workbench, target: u16) {
+    workbench.state.volume = target;
+    workbench.pending_volume = Some(target);
+    workbench.volume_target = Some(target);
+}
+
+fn adjust_volume(workbench: &mut Workbench, delta_percent: i16) {
+    let target = volume::stepped(workbench.state.volume, delta_percent);
+    queue_volume(workbench, target);
+}
+
+fn flush_pending_volume(workbench: &mut Workbench, controls: &mpsc::UnboundedSender<Control>) {
+    if workbench.pending_volume.is_none()
+        || workbench.last_volume_flush.elapsed() < VOLUME_FLUSH_INTERVAL
+    {
+        return;
+    }
+    if let Some(volume) = workbench.pending_volume.take() {
+        let _ = controls.send(Control::SetVolume(volume));
+        workbench.last_volume_flush = Instant::now();
+    }
+}
+
 fn seek_relative(workbench: &Workbench, delta_ms: i64, controls: &mpsc::UnboundedSender<Control>) {
     let duration = workbench.state.duration_ms();
     if duration == 0 {
@@ -620,9 +730,7 @@ fn handle_mouse(
             {
                 if rect.width > 1 {
                     let relative = mouse.column.saturating_sub(rect.x) as f64 / rect.width as f64;
-                    let _ = controls.send(Control::SetVolume(
-                        (VOLUME_MAX as f64 * relative.clamp(0.0, 1.0)) as u16,
-                    ));
+                    queue_volume(workbench, volume::from_ratio(relative));
                 }
             } else if workbench.state.view == View::Search
                 && let Some((index, _)) = workbench
@@ -646,7 +754,7 @@ fn handle_mouse(
                 .volume
                 .is_some_and(|rect| contains(rect, point))
             {
-                let _ = controls.send(Control::VolumeUp);
+                adjust_volume(workbench, volume::STEP_PERCENT as i16);
             }
         }
         MouseEventKind::ScrollDown => {
@@ -659,7 +767,7 @@ fn handle_mouse(
                 .volume
                 .is_some_and(|rect| contains(rect, point))
             {
-                let _ = controls.send(Control::VolumeDown);
+                adjust_volume(workbench, -(volume::STEP_PERCENT as i16));
             }
         }
         _ => {}
@@ -1230,19 +1338,19 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(8),
+            Constraint::Length(10),
             Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Min(10),
-            Constraint::Length(20),
+            Constraint::Min(18),
+            Constraint::Length(22),
         ])
         .split(rows[0]);
     let previous = Paragraph::new(" ◀ prev ")
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.accent));
     let toggle_label = if workbench.state.status == PlaybackStatus::Playing {
-        " Ⅱ pause "
+        " Ⅱ pause  "
     } else {
-        " ▶ play "
+        " ▶ play   "
     };
     let toggle = Paragraph::new(toggle_label)
         .alignment(Alignment::Center)
@@ -1262,23 +1370,20 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
     workbench.state.hits.next = Some(top[2]);
 
     let flags = format!(
-        "{} shuffle   {} repeat",
-        if workbench.state.shuffle {
-            "●"
-        } else {
-            "○"
-        },
-        if workbench.state.repeat { "●" } else { "○" }
+        "{} · {} shuffle · {} repeat",
+        workbench.state.status.label(),
+        if workbench.state.shuffle { "on" } else { "off" },
+        if workbench.state.repeat { "on" } else { "off" }
     );
     frame.render_widget(
         Paragraph::new(flags).style(Style::default().fg(theme.muted)),
         top[3],
     );
-    let volume_ratio = workbench.state.volume as f64 / VOLUME_MAX as f64;
+    let volume_percent = volume::percent(workbench.state.volume);
     frame.render_widget(
         Gauge::default()
-            .ratio(volume_ratio)
-            .label(format!("vol {:>3}%", (volume_ratio * 100.0).round() as u8)),
+            .ratio(volume_percent as f64 / 100.0)
+            .label(format!("volume {volume_percent:>3}%")),
         top[4],
     );
     workbench.state.hits.volume = Some(top[4]);
@@ -1309,7 +1414,7 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
         View::Search => " Enter search/play · ↑↓ select · Ctrl+A add · Ctrl+P play · Esc back ",
         View::Editor => " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ",
         _ => {
-            " Tab views · Space play/pause · h/l prev/next · +/- volume · [/] seek · s shuffle · r repeat · F6 theme · q quit "
+            " Tab views · h/← prev · Space play/pause · l/→ next · +/- volume 5% · [/] seek · s shuffle · r repeat · F6 theme · q quit "
         }
     };
     frame.render_widget(
@@ -1325,18 +1430,6 @@ fn format_duration(duration_ms: u32) -> String {
     format!("{}:{:02}", total_seconds / 60, total_seconds % 60)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), String> {
-    disable_raw_mode().map_err(|error| format!("could not restore terminal mode: {error}"))?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )
-    .map_err(|error| format!("could not leave alternate screen: {error}"))?;
-    terminal
-        .show_cursor()
-        .map_err(|error| format!("could not restore cursor: {error}"))
-}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -18,6 +18,11 @@ async fn main() {
             process::exit(1);
         }
 
+        if let Err(err) = riff::player::init_tui_logging() {
+            eprintln!("riff: {err}");
+            process::exit(1);
+        }
+
         let path = PathBuf::from(path);
         let source = match fs::read_to_string(&path) {
             Ok(source) => source,
