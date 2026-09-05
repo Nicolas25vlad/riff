@@ -21,7 +21,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply cache/search patch
-        run: python scripts/apply_v070_phase2.py
+        run: |
+          python scripts/apply_v070_phase2.py
+          python scripts/apply_v070_phase2_followup.py
 
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
@@ -47,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm scripts/apply_v070_phase2.py .github/workflows/apply-v070-phase2.yml
+          rm scripts/apply_v070_phase2.py scripts/apply_v070_phase2_followup.py .github/workflows/apply-v070-phase2.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
