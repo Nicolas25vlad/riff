@@ -1,0 +1,56 @@
+name: Publish riff-music v0.6.2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/publish-crates-0.6.2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate exact release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          test "$version" = "0.6.2"
+          target=$(gh api repos/${{ github.repository }}/git/ref/tags/v0.6.2 --jq '.object.sha')
+          test "$target" = "bc64fb9c9e331d41052bdef7911109dc6796d7f2"
+          test -n "${CARGO_REGISTRY_TOKEN:-}"
+
+      - name: Install Linux audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Final crates.io dry run
+        run: cargo publish --dry-run
+
+      - name: Publish crates.io
+        run: cargo publish
+
+      - name: Remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/publish-crates-0.6.2.yml
+          git commit -m 'chore(release): remove v0.6.2 crates publisher'
+          git push origin HEAD:main
