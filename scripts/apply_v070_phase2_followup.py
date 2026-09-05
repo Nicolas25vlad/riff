@@ -76,9 +76,9 @@ sub(
     let mut raw_by_uri = BTreeMap::<String, BTreeMap<String, String>>::new();
     for (index, variant) in query_variants(query).into_iter().enumerate() {
         let per_variant = if index == 0 {
-            limit.min(36).max(1)
+            limit.clamp(1, 36)
         } else {
-            limit.min(12).max(1)
+            limit.clamp(1, 12)
         };
         match raw_search_with_session(session, &variant, per_variant).await {
             Ok(raw) => {
