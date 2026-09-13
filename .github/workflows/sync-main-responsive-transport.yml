@@ -1,0 +1,30 @@
+name: Sync main into responsive transport
+
+on:
+  push:
+    branches: [feat/tui-responsive-transport]
+    paths:
+      - .github/workflows/sync-main-responsive-transport.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/tui-responsive-transport
+          fetch-depth: 0
+
+      - name: Merge latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git merge --no-edit origin/main
+          git push origin HEAD:feat/tui-responsive-transport
