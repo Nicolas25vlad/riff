@@ -38,6 +38,7 @@ librespot = { version = "0.8.0", default-features = false, features = ["rodio-ba
 
 # librespot 0.8.0's build script is incompatible with vergen 9.1.x.
 # Keep this exact pin until a crates.io librespot release includes upstream fix #1683.
+# Cargo.lock is committed for this binary application; CI/install/release paths use --locked.
 [build-dependencies]
 vergen = "=9.0.6"
 
