@@ -13,6 +13,7 @@ use std::{
 };
 
 use crossterm::{
+    cursor::Show,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -59,6 +60,76 @@ struct Workbench {
     artwork_pending: HashMap<String, bool>,
     pending_volume: Option<u16>,
     last_volume_send: Instant,
+}
+
+#[derive(Debug, Default)]
+struct TerminalGuard {
+    raw_mode: bool,
+    alternate_screen: bool,
+    mouse_capture: bool,
+}
+
+impl TerminalGuard {
+    fn enter() -> Result<Self, String> {
+        let mut guard = Self::default();
+
+        enable_raw_mode()
+            .map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
+        guard.raw_mode = true;
+
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)
+            .map_err(|error| format!("could not enter alternate screen: {error}"))?;
+        guard.alternate_screen = true;
+
+        execute!(stdout, EnableMouseCapture)
+            .map_err(|error| format!("could not enable mouse capture: {error}"))?;
+        guard.mouse_capture = true;
+
+        Ok(guard)
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        let mut stdout = io::stdout();
+
+        if self.mouse_capture {
+            match execute!(stdout, DisableMouseCapture) {
+                Ok(()) => self.mouse_capture = false,
+                Err(error) => errors.push(format!("could not disable mouse capture: {error}")),
+            }
+        }
+
+        if self.alternate_screen {
+            match execute!(stdout, LeaveAlternateScreen) {
+                Ok(()) => self.alternate_screen = false,
+                Err(error) => errors.push(format!("could not leave alternate screen: {error}")),
+            }
+        }
+
+        if let Err(error) = execute!(stdout, Show) {
+            errors.push(format!("could not restore cursor: {error}"));
+        }
+
+        if self.raw_mode {
+            match disable_raw_mode() {
+                Ok(()) => self.raw_mode = false,
+                Err(error) => errors.push(format!("could not restore terminal mode: {error}")),
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
 }
 
 pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
@@ -119,13 +190,9 @@ async fn run_terminal(
     controls: mpsc::UnboundedSender<Control>,
     mut updates: mpsc::UnboundedReceiver<PlayerUpdate>,
 ) -> Result<(), String> {
-    enable_raw_mode().map_err(|error| format!("could not enable terminal raw mode: {error}"))?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-        .map_err(|error| format!("could not enter alternate screen: {error}"))?;
-
+    let mut terminal_guard = TerminalGuard::enter()?;
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)
         .map_err(|error| format!("could not initialize terminal UI: {error}"))?;
     terminal
@@ -172,7 +239,8 @@ async fn run_terminal(
     }
     .await;
 
-    let restore = restore_terminal(&mut terminal);
+    drop(terminal);
+    let restore = terminal_guard.restore();
     loop_result.and(restore)
 }
 
@@ -1383,18 +1451,6 @@ fn format_duration(duration_ms: u32) -> String {
     format!("{}:{:02}", total_seconds / 60, total_seconds % 60)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(), String> {
-    disable_raw_mode().map_err(|error| format!("could not restore terminal mode: {error}"))?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )
-    .map_err(|error| format!("could not leave alternate screen: {error}"))?;
-    terminal
-        .show_cursor()
-        .map_err(|error| format!("could not restore cursor: {error}"))
-}
 #[cfg(test)]
 mod tests {
     use super::*;

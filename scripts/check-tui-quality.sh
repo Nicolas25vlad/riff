@@ -20,6 +20,18 @@ if grep -RIn 'env_logger' src/workbench --include='*.rs'; then
   fail 'Workbench must not initialize env_logger directly.'
 fi
 
+if ! grep -Fq 'impl Drop for TerminalGuard' src/workbench/mod.rs; then
+  fail 'Workbench terminal ownership must use a Drop-based RAII guard.'
+fi
+
+if ! grep -Fq 'TerminalGuard::enter()?' src/workbench/mod.rs; then
+  fail 'Workbench must enter terminal mode through TerminalGuard.'
+fi
+
+if grep -Fq 'fn restore_terminal(' src/workbench/mod.rs; then
+  fail 'Legacy manual-only terminal restoration must not return.'
+fi
+
 # Mouse wheel actions are contextual: Search navigates, volume only changes over its gauge.
 python - <<'PY'
 from pathlib import Path
