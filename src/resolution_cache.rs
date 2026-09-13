@@ -71,7 +71,11 @@ impl ResolutionCache {
 }
 
 fn cache_key(provider: &str, query: &str) -> String {
-    format!("{}\t{}", provider.trim().to_ascii_lowercase(), normalize(query))
+    format!(
+        "{}\t{}",
+        provider.trim().to_ascii_lowercase(),
+        normalize(query)
+    )
 }
 
 fn parse_cache(source: &str) -> Option<BTreeMap<String, String>> {
@@ -147,7 +151,10 @@ mod tests {
         let mut cache = ResolutionCache::from_path(path.clone());
         cache.insert("spotify", "War Pigs", "spotify:track:abc123");
 
-        assert_eq!(cache.get("spotify", "War Pigs"), Some("spotify:track:abc123"));
+        assert_eq!(
+            cache.get("spotify", "War Pigs"),
+            Some("spotify:track:abc123")
+        );
         assert_eq!(cache.get("spotify", "War Pigs live"), None);
         let _ = fs::remove_file(path);
     }
@@ -155,8 +162,7 @@ mod tests {
     #[test]
     fn corrupt_or_old_cache_falls_back_to_empty() {
         let path = temp_cache("corrupt");
-        fs::write(&path, "riff-resolution-cache-v0\nnot valid\n")
-            .expect("fixture should write");
+        fs::write(&path, "riff-resolution-cache-v0\nnot valid\n").expect("fixture should write");
 
         let loaded = ResolutionCache::from_path(path.clone());
         assert_eq!(loaded.get("spotify", "War Pigs"), None);
@@ -168,14 +174,15 @@ mod tests {
         let path = temp_cache("malformed");
         fs::write(
             &path,
-            format!(
-                "{CACHE_HEADER}\ninvalid row\nspotify\twar pigs\tspotify:track:abc123\n"
-            ),
+            format!("{CACHE_HEADER}\ninvalid row\nspotify\twar pigs\tspotify:track:abc123\n"),
         )
         .expect("fixture should write");
 
         let loaded = ResolutionCache::from_path(path.clone());
-        assert_eq!(loaded.get("spotify", "War Pigs"), Some("spotify:track:abc123"));
+        assert_eq!(
+            loaded.get("spotify", "War Pigs"),
+            Some("spotify:track:abc123")
+        );
         let _ = fs::remove_file(path);
     }
 }
