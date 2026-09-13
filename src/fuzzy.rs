@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::player::SearchCandidate;
 
 pub const DEFAULT_THRESHOLD: u8 = 42;
@@ -64,7 +66,7 @@ pub fn rank_candidates(
         b_score
             .cmp(&a_score)
             .then_with(|| version_penalty(a).cmp(&version_penalty(b)))
-            .then_with(|| release_year(a).cmp(&release_year(b)))
+            .then_with(|| canonical_release_order(a, b))
             .then_with(|| popularity(b).cmp(&popularity(a)))
             .then_with(|| a.uri.cmp(&b.uri))
     });
@@ -184,6 +186,34 @@ fn version_penalty(candidate: &SearchCandidate) -> u8 {
     .iter()
     .filter(|marker| haystack.contains(**marker))
     .count() as u8
+}
+
+fn canonical_release_order(a: &SearchCandidate, b: &SearchCandidate) -> Ordering {
+    if same_recording_identity(a, b) {
+        release_year(a).cmp(&release_year(b))
+    } else {
+        Ordering::Equal
+    }
+}
+
+fn same_recording_identity(a: &SearchCandidate, b: &SearchCandidate) -> bool {
+    let identity = |candidate: &SearchCandidate| {
+        let title = candidate
+            .metadata
+            .get("title")
+            .map(String::as_str)
+            .unwrap_or("");
+        let artist = candidate
+            .metadata
+            .get("artist")
+            .map(String::as_str)
+            .unwrap_or("");
+        (normalize(title), normalize(artist))
+    };
+
+    let a_identity = identity(a);
+    let b_identity = identity(b);
+    !a_identity.0.is_empty() && !a_identity.1.is_empty() && a_identity == b_identity
 }
 
 fn release_year(candidate: &SearchCandidate) -> i32 {
@@ -324,5 +354,14 @@ mod tests {
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].metadata["album"], "First Pressing");
         assert_eq!(ranked[1].metadata["version"], "Live");
+    }
+
+    #[test]
+    fn release_year_does_not_bias_different_recordings() {
+        let old =
+            candidate_with_release("Signal Fire", "The Foundry", "Old Record", 1968, 50, None);
+        let new =
+            candidate_with_release("Signal Fires", "Another Band", "New Record", 2024, 90, None);
+        assert_eq!(canonical_release_order(&old, &new), Ordering::Equal);
     }
 }
