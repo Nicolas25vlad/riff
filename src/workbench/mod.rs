@@ -132,16 +132,37 @@ impl Drop for TerminalGuard {
     }
 }
 
+const STARTUP_FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+const STARTUP_FRAME_INTERVAL: Duration = Duration::from_millis(90);
+
+fn startup_frame(index: usize) -> &'static str {
+    STARTUP_FRAMES[index % STARTUP_FRAMES.len()]
+}
+
 pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     if playlist.tracks.is_empty() {
         return Err("playlist has no tracks to play".to_string());
     }
-    let queue = player_task::resolve_queue(&playlist).await?;
+
     let editor = EditorState::load(&file_path)?;
     let file_name = file_path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| file_path.display().to_string());
+    let theme = Theme::from_env();
+
+    let mut terminal_guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)
+        .map_err(|error| format!("could not initialize terminal UI: {error}"))?;
+    terminal
+        .clear()
+        .map_err(|error| format!("could not clear terminal: {error}"))?;
+
+    let queue = resolve_queue_with_startup(&mut terminal, &playlist, theme).await?;
+    terminal
+        .draw(|frame| draw_startup_ready(frame, &playlist.name, theme, queue.len()))
+        .map_err(|error| format!("could not render startup completion: {error}"))?;
 
     let state = AppState {
         file_path: file_path.clone(),
@@ -157,7 +178,7 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         repeat: false,
         message: "Connecting to Spotify…".into(),
         view: View::NowPlaying,
-        theme: Theme::from_env(),
+        theme,
         git: git_context::detect(&file_path),
         search: SearchState::default(),
         lyrics: LyricsState::default(),
@@ -180,68 +201,235 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         pending_volume: None,
         last_volume_send: Instant::now() - VOLUME_SEND_INTERVAL,
     };
-    let ui_result = run_terminal(&mut workbench, control_tx, update_rx).await;
-    let _ = player_task.await;
-    ui_result
-}
-
-async fn run_terminal(
-    workbench: &mut Workbench,
-    controls: mpsc::UnboundedSender<Control>,
-    mut updates: mpsc::UnboundedReceiver<PlayerUpdate>,
-) -> Result<(), String> {
-    let mut terminal_guard = TerminalGuard::enter()?;
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)
-        .map_err(|error| format!("could not initialize terminal UI: {error}"))?;
-    terminal
-        .clear()
-        .map_err(|error| format!("could not clear terminal: {error}"))?;
-
-    let (art_tx, mut art_rx) = mpsc::unbounded_channel::<(String, RenderedArtwork)>();
-    request_current_artwork(workbench, &controls);
-
-    let loop_result = async {
-        loop {
-            while let Ok(update) = updates.try_recv() {
-                apply_player_update(workbench, update, &picker, art_tx.clone(), &controls)?;
-            }
-            while let Ok((key, artwork)) = art_rx.try_recv() {
-                workbench.artwork.insert(key.clone(), artwork);
-                workbench.artwork_pending.remove(&key);
-            }
-            flush_pending_volume(workbench, &controls);
-
-            terminal
-                .draw(|frame| draw(frame, workbench))
-                .map_err(|error| format!("could not render Riff Workbench: {error}"))?;
-
-            if event::poll(Duration::from_millis(40))
-                .map_err(|error| format!("could not poll terminal input: {error}"))?
-            {
-                match event::read()
-                    .map_err(|error| format!("could not read terminal input: {error}"))?
-                {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        if handle_key(workbench, key, &controls)? {
-                            break;
-                        }
-                    }
-                    Event::Mouse(mouse) => handle_mouse(workbench, mouse, &controls)?,
-                    _ => {}
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(16)).await;
-        }
-        Ok::<(), String>(())
-    }
+    let ui_result = run_terminal_loop(
+        &mut terminal,
+        &mut workbench,
+        &control_tx,
+        update_rx,
+        &picker,
+    )
     .await;
 
+    let _ = control_tx.send(Control::Quit);
+    drop(control_tx);
     drop(terminal);
     let restore = terminal_guard.restore();
-    loop_result.and(restore)
+    let _ = player_task.await;
+    ui_result.and(restore)
+}
+
+async fn resolve_queue_with_startup(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    playlist: &Playlist,
+    theme: Theme,
+) -> Result<Vec<QueueItem>, String> {
+    let mut resolver = Box::pin(player_task::resolve_queue(playlist));
+    let mut frame_index = 0usize;
+
+    loop {
+        terminal
+            .draw(|frame| draw_startup(frame, &playlist.name, theme, frame_index))
+            .map_err(|error| format!("could not render startup state: {error}"))?;
+
+        tokio::select! {
+            result = &mut resolver => {
+                return match result {
+                    Ok(queue) => Ok(queue),
+                    Err(error) => {
+                        terminal
+                            .draw(|frame| draw_startup_error(frame, &playlist.name, theme, &error))
+                            .map_err(|draw_error| format!("{error}; could not render startup error: {draw_error}"))?;
+                        wait_for_startup_ack()?;
+                        Err(error)
+                    }
+                };
+            }
+            _ = tokio::time::sleep(STARTUP_FRAME_INTERVAL) => {
+                frame_index = frame_index.wrapping_add(1);
+            }
+        }
+
+        if event::poll(Duration::ZERO)
+            .map_err(|error| format!("could not poll startup input: {error}"))?
+        {
+            match event::read().map_err(|error| format!("could not read startup input: {error}"))? {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) =>
+                {
+                    return Err("Workbench startup cancelled".to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn wait_for_startup_ack() -> Result<(), String> {
+    loop {
+        if event::poll(Duration::from_millis(100))
+            .map_err(|error| format!("could not wait for startup error acknowledgement: {error}"))?
+            && let Event::Key(key) = event::read()
+                .map_err(|error| format!("could not read startup error acknowledgement: {error}"))?
+            && key.kind == KeyEventKind::Press
+        {
+            return Ok(());
+        }
+    }
+}
+
+fn draw_startup(frame: &mut Frame<'_>, playlist_name: &str, theme: Theme, index: usize) {
+    draw_startup_panel(
+        frame,
+        theme,
+        format!("{}  Starting Riff Workbench", startup_frame(index)),
+        playlist_name,
+        "Spotify session · resolving tracks · loading metadata",
+        "q / Esc cancels",
+        false,
+    );
+}
+
+fn draw_startup_ready(
+    frame: &mut Frame<'_>,
+    playlist_name: &str,
+    theme: Theme,
+    track_count: usize,
+) {
+    draw_startup_panel(
+        frame,
+        theme,
+        "✓  Playlist ready".to_string(),
+        playlist_name,
+        &format!("{track_count} tracks resolved · starting player"),
+        "",
+        false,
+    );
+}
+
+fn draw_startup_error(frame: &mut Frame<'_>, playlist_name: &str, theme: Theme, error: &str) {
+    draw_startup_panel(
+        frame,
+        theme,
+        "Startup failed".to_string(),
+        playlist_name,
+        error,
+        "Press any key to return to the terminal",
+        true,
+    );
+}
+
+fn draw_startup_panel(
+    frame: &mut Frame<'_>,
+    theme: Theme,
+    title: String,
+    playlist_name: &str,
+    detail: &str,
+    hint: &str,
+    danger: bool,
+) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.background).fg(theme.foreground)),
+        area,
+    );
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Length(9),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(10),
+            Constraint::Percentage(80),
+            Constraint::Percentage(10),
+        ])
+        .split(rows[1]);
+
+    let title_color = if danger { theme.danger } else { theme.accent };
+    let lines = vec![
+        Line::from(Span::styled(
+            "RIFF",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(playlist_name.to_string()),
+        Line::from(Span::styled(
+            detail.to_string(),
+            Style::default().fg(theme.muted),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            hint.to_string(),
+            Style::default().fg(theme.muted),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        columns[1],
+    );
+}
+
+async fn run_terminal_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    workbench: &mut Workbench,
+    controls: &mpsc::UnboundedSender<Control>,
+    mut updates: mpsc::UnboundedReceiver<PlayerUpdate>,
+    picker: &Picker,
+) -> Result<(), String> {
+    let (art_tx, mut art_rx) = mpsc::unbounded_channel::<(String, RenderedArtwork)>();
+    request_current_artwork(workbench, controls);
+
+    loop {
+        while let Ok(update) = updates.try_recv() {
+            apply_player_update(workbench, update, picker, art_tx.clone(), controls)?;
+        }
+        while let Ok((key, artwork)) = art_rx.try_recv() {
+            workbench.artwork.insert(key.clone(), artwork);
+            workbench.artwork_pending.remove(&key);
+        }
+        flush_pending_volume(workbench, controls);
+
+        terminal
+            .draw(|frame| draw(frame, workbench))
+            .map_err(|error| format!("could not render Riff Workbench: {error}"))?;
+
+        if event::poll(Duration::from_millis(40))
+            .map_err(|error| format!("could not poll terminal input: {error}"))?
+        {
+            match event::read()
+                .map_err(|error| format!("could not read terminal input: {error}"))?
+            {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if handle_key(workbench, key, controls)? {
+                        break;
+                    }
+                }
+                Event::Mouse(mouse) => handle_mouse(workbench, mouse, controls)?,
+                _ => {}
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(16)).await;
+    }
+    Ok(())
 }
 
 fn apply_player_update(

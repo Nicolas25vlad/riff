@@ -46,4 +46,12 @@ PY
 
 cargo test --bin riff workbench::tests -- --nocapture
 
+if ! grep -Fq 'resolve_queue_with_startup' src/workbench/mod.rs; then
+  fail 'Workbench must surface playlist resolution through the startup UI.'
+fi
+
+if ! grep -Fq 'STARTUP_FRAMES' src/workbench/mod.rs; then
+  fail 'Workbench startup must retain a visible animated loading state.'
+fi
+
 echo 'TUI quality invariants passed.'
