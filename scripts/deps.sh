@@ -54,7 +54,7 @@ install_native_deps() {
 install_rust_deps() {
   command -v cargo >/dev/null 2>&1 || fail "Cargo is required. Install Rust with rustup first."
   say "Fetching Rust dependencies..."
-  cargo fetch
+  cargo fetch --locked
   say "Dependencies are ready."
 }
 
@@ -68,8 +68,8 @@ update_rust_deps() {
 check_deps() {
   command -v cargo >/dev/null 2>&1 || fail "Cargo is required. Install Rust with rustup first."
   say "Checking dependency graph and project compilation..."
-  cargo tree >/dev/null
-  cargo check --all-targets --all-features
+  cargo tree --locked >/dev/null
+  cargo check --locked --all-targets --all-features
   say "Dependency check passed."
 }
 
