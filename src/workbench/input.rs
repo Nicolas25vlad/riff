@@ -223,22 +223,35 @@ fn primary_hint(action: Action) -> &'static str {
         .unwrap_or("?")
 }
 
-pub fn global_status_hint() -> String {
-    format!(
-        " {} views · {} play/pause · {}/{} prev/next · {}/{} volume · {}/{} seek · {} shuffle · {} repeat · {} theme · {} quit ",
-        primary_hint(Action::NextView),
-        primary_hint(Action::TogglePlayback),
-        primary_hint(Action::PreviousTrack),
-        primary_hint(Action::NextTrack),
-        primary_hint(Action::VolumeUp),
-        primary_hint(Action::VolumeDown),
-        primary_hint(Action::SeekBackward),
-        primary_hint(Action::SeekForward),
-        primary_hint(Action::ToggleShuffle),
-        primary_hint(Action::ToggleRepeat),
-        primary_hint(Action::CycleTheme),
-        primary_hint(Action::Quit),
-    )
+pub fn global_status_hint(compact: bool) -> String {
+    if compact {
+        format!(
+            " {} play · {}/{} track · {}/{} vol · {} view · {} quit ",
+            primary_hint(Action::TogglePlayback),
+            primary_hint(Action::PreviousTrack),
+            primary_hint(Action::NextTrack),
+            primary_hint(Action::VolumeUp),
+            primary_hint(Action::VolumeDown),
+            primary_hint(Action::NextView),
+            primary_hint(Action::Quit),
+        )
+    } else {
+        format!(
+            " {} views · {} play/pause · {}/{} prev/next · {}/{} volume · {}/{} seek · {} shuffle · {} repeat · {} theme · {} quit ",
+            primary_hint(Action::NextView),
+            primary_hint(Action::TogglePlayback),
+            primary_hint(Action::PreviousTrack),
+            primary_hint(Action::NextTrack),
+            primary_hint(Action::VolumeUp),
+            primary_hint(Action::VolumeDown),
+            primary_hint(Action::SeekBackward),
+            primary_hint(Action::SeekForward),
+            primary_hint(Action::ToggleShuffle),
+            primary_hint(Action::ToggleRepeat),
+            primary_hint(Action::CycleTheme),
+            primary_hint(Action::Quit),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -330,13 +343,26 @@ mod tests {
 
     #[test]
     fn footer_is_derived_from_primary_bindings() {
-        let hint = global_status_hint();
+        let hint = global_status_hint(false);
         for expected in ["Tab", "Space", "h/l", "+/-", "[/]", "s", "r", "F6", "q"] {
             assert!(
                 hint.contains(expected),
                 "missing footer hint {expected}: {hint}"
             );
         }
+    }
+
+    #[test]
+    fn compact_footer_uses_primary_bindings_and_is_shorter() {
+        let compact = global_status_hint(true);
+        let wide = global_status_hint(false);
+        for expected in ["Space", "h/l", "+/-", "Tab", "q"] {
+            assert!(
+                compact.contains(expected),
+                "missing compact hint {expected}: {compact}"
+            );
+        }
+        assert!(compact.len() < wide.len());
     }
 
     #[test]
