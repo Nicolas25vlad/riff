@@ -1343,7 +1343,7 @@ fn playlist_window(total: usize, current: Option<usize>, visible: usize) -> (usi
 fn draw_playlist(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let theme = workbench.state.theme;
     let current = workbench.state.current_index();
-    let visible_items = usize::from(area.height.saturating_sub(2) / 2).max(1);
+    let visible_items = usize::from(area.height.saturating_sub(2) / 2);
     let (start, end) = playlist_window(workbench.state.queue.len(), current, visible_items);
     let items = workbench
         .state
