@@ -25,7 +25,7 @@ jobs:
       - name: Generate Cargo.lock
         run: cargo generate-lockfile
 
-      - name: Apply locked-build policy
+      - name: Apply locked-build policy outside workflows
         shell: python
         run: |
           from pathlib import Path
@@ -48,20 +48,6 @@ jobs:
                   ('cargo tree >/dev/null\n', 'cargo tree --locked >/dev/null\n'),
                   ('cargo check --all-targets --all-features\n', 'cargo check --locked --all-targets --all-features\n'),
               ],
-              ".github/workflows/ci.yml": [
-                  ('cargo clippy --all-targets --all-features -- -D warnings', 'cargo clippy --locked --all-targets --all-features -- -D warnings'),
-                  ('cargo test --all-features --no-fail-fast', 'cargo test --locked --all-features --no-fail-fast'),
-                  ('cargo check --all-targets --all-features', 'cargo check --locked --all-targets --all-features'),
-                  ('cargo build --all-features', 'cargo build --locked --all-features'),
-              ],
-              ".github/workflows/remote-lab.yml": [
-                  ('cargo build --release --all-features', 'cargo build --locked --release --all-features'),
-              ],
-              ".github/workflows/release.yml": [
-                  ('cargo build --release', 'cargo build --locked --release'),
-                  ('cargo publish --dry-run', 'cargo publish --locked --dry-run'),
-                  ('cargo publish\n', 'cargo publish --locked\n'),
-              ],
           }
 
           for filename, pairs in replacements.items():
@@ -82,12 +68,12 @@ jobs:
       - name: Verify lockfile resolves
         run: cargo metadata --locked --format-version 1 > /dev/null
 
-      - name: Commit generated lockfile and policy
+      - name: Commit generated lockfile and non-workflow policy
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.lock Cargo.toml install.sh install.ps1 INSTALL.md scripts/deps.sh .github/workflows/ci.yml .github/workflows/remote-lab.yml .github/workflows/release.yml
-          git commit -m 'chore(build): commit lockfile and enforce locked builds'
+          git add Cargo.lock Cargo.toml install.sh install.ps1 INSTALL.md scripts/deps.sh
+          git commit -m 'chore(build): commit lockfile and enforce locked installs'
           git push origin HEAD:chore/reproducible-builds
