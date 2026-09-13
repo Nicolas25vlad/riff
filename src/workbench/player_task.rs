@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use image::DynamicImage;
@@ -34,6 +34,27 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
+
+#[derive(Debug)]
+struct TransitionProbe {
+    trigger: &'static str,
+    from_uri: Option<String>,
+    started_at: Instant,
+}
+
+impl TransitionProbe {
+    fn new(trigger: &'static str, from_uri: Option<String>) -> Self {
+        Self {
+            trigger,
+            from_uri,
+            started_at: Instant::now(),
+        }
+    }
+
+    fn elapsed_ms(&self) -> u128 {
+        self.started_at.elapsed().as_millis()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Control {
@@ -172,6 +193,9 @@ pub async fn run_player(
         HashMap::<String, (String, Vec<LyricsLine>)>::new(),
     ));
     let lyrics_pending = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let mut current_uri: Option<String> = None;
+    let mut transition_probe: Option<TransitionProbe> = None;
+    let mut preload_started = HashMap::<String, Instant>::new();
 
     tokio::pin!(spirc_task);
     loop {
@@ -180,13 +204,32 @@ pub async fn run_player(
             command = controls.recv() => {
                 match command {
                     Some(Control::Toggle) => spirc.play_pause().map_err(|err| format!("could not toggle playback: {err}"))?,
-                    Some(Control::Next) => spirc.next().map_err(|err| format!("could not skip track: {err}"))?,
-                    Some(Control::Previous) => spirc.prev().map_err(|err| format!("could not go to previous track: {err}"))?,
+                    Some(Control::Next) => {
+                        log::debug!(
+                            "playback transition command trigger=next from={}",
+                            current_uri.as_deref().unwrap_or("unknown")
+                        );
+                        transition_probe = Some(TransitionProbe::new("next", current_uri.clone()));
+                        spirc.next().map_err(|err| format!("could not skip track: {err}"))?;
+                    }
+                    Some(Control::Previous) => {
+                        log::debug!(
+                            "playback transition command trigger=previous from={}",
+                            current_uri.as_deref().unwrap_or("unknown")
+                        );
+                        transition_probe = Some(TransitionProbe::new("previous", current_uri.clone()));
+                        spirc.prev().map_err(|err| format!("could not go to previous track: {err}"))?;
+                    }
                     Some(Control::SetVolume(volume)) => spirc.set_volume(volume).map_err(|err| format!("could not set volume: {err}"))?,
                     Some(Control::Seek(position_ms)) => spirc.set_position_ms(position_ms).map_err(|err| format!("could not seek: {err}"))?,
                     Some(Control::Shuffle(enabled)) => spirc.shuffle(enabled).map_err(|err| format!("could not change shuffle: {err}"))?,
                     Some(Control::Repeat(enabled)) => spirc.repeat(enabled).map_err(|err| format!("could not change repeat: {err}"))?,
                     Some(Control::PlayUri(uri)) => {
+                        log::debug!(
+                            "playback transition command trigger=play-uri from={} target={uri}",
+                            current_uri.as_deref().unwrap_or("unknown")
+                        );
+                        transition_probe = Some(TransitionProbe::new("play-uri", current_uri.clone()));
                         spirc.load(LoadRequest::from_tracks(vec![uri], LoadRequestOptions::default()))
                             .map_err(|err| format!("could not load selected track: {err}"))?;
                         spirc.play().map_err(|err| format!("could not play selected track: {err}"))?;
@@ -207,6 +250,23 @@ pub async fn run_player(
                 match event {
                     PlayerEvent::Playing { track_id, position_ms, .. } => {
                         let uri = track_id.to_string();
+                        if let Some(probe) = transition_probe.take() {
+                            log::debug!(
+                                "playback transition event=playing trigger={} from={} target={} elapsed_ms={}",
+                                probe.trigger,
+                                probe.from_uri.as_deref().unwrap_or("unknown"),
+                                uri,
+                                probe.elapsed_ms()
+                            );
+                        }
+                        if let Some(started_at) = preload_started.remove(&uri) {
+                            log::debug!(
+                                "playback transition preload_to_play target={} elapsed_ms={}",
+                                uri,
+                                started_at.elapsed().as_millis()
+                            );
+                        }
+                        current_uri = Some(uri.clone());
                         let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Playing));
                         let _ = updates.send(PlayerUpdate::Track { uri: uri.clone(), position_ms });
                         if let Some(cover_id) = queue.iter().find(|item| item.uri == uri).and_then(|item| item.cover_id.clone()) {
@@ -216,6 +276,7 @@ pub async fn run_player(
                     }
                     PlayerEvent::Paused { track_id, position_ms, .. } => {
                         let uri = track_id.to_string();
+                        current_uri = Some(uri.clone());
                         let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Paused));
                         let _ = updates.send(PlayerUpdate::Track { uri: uri.clone(), position_ms });
                         request_lyrics(session.clone(), uri, updates.clone(), lyrics_cache.clone(), lyrics_pending.clone());
@@ -226,8 +287,53 @@ pub async fn run_player(
                         let _ = updates.send(PlayerUpdate::Position { uri: track_id.to_string(), position_ms });
                     }
                     PlayerEvent::Stopped { track_id, .. } => {
+                        let uri = track_id.to_string();
+                        log::debug!("playback transition event=stopped track={uri}");
+                        current_uri = Some(uri.clone());
                         let _ = updates.send(PlayerUpdate::Status(PlaybackStatus::Stopped));
-                        let _ = updates.send(PlayerUpdate::Track { uri: track_id.to_string(), position_ms: 0 });
+                        let _ = updates.send(PlayerUpdate::Track { uri, position_ms: 0 });
+                    }
+                    PlayerEvent::Preloading { track_id } => {
+                        let uri = track_id.to_string();
+                        preload_started.insert(uri.clone(), Instant::now());
+                        log::debug!("playback transition event=preloading target={uri}");
+                    }
+                    PlayerEvent::TimeToPreloadNextTrack { track_id, .. } => {
+                        log::debug!(
+                            "playback transition event=time-to-preload current={}",
+                            track_id
+                        );
+                    }
+                    PlayerEvent::Loading { track_id, position_ms, .. } => {
+                        let uri = track_id.to_string();
+                        if let Some(probe) = transition_probe.as_ref() {
+                            log::debug!(
+                                "playback transition event=loading trigger={} target={} position_ms={} elapsed_ms={}",
+                                probe.trigger,
+                                uri,
+                                position_ms,
+                                probe.elapsed_ms()
+                            );
+                        } else {
+                            log::debug!(
+                                "playback transition event=loading trigger=unknown target={} position_ms={}",
+                                uri,
+                                position_ms
+                            );
+                        }
+                    }
+                    PlayerEvent::EndOfTrack { track_id, .. } => {
+                        let uri = track_id.to_string();
+                        log::debug!("playback transition event=end-of-track current={uri}");
+                        if transition_probe.is_none() {
+                            transition_probe = Some(TransitionProbe::new("automatic", Some(uri)));
+                        }
+                    }
+                    PlayerEvent::Unavailable { track_id, .. } => {
+                        log::debug!("playback transition event=unavailable track={}", track_id);
+                    }
+                    PlayerEvent::TrackChanged { audio_item } => {
+                        log::debug!("playback transition event=track-changed track={}", audio_item.uri);
                     }
                     PlayerEvent::VolumeChanged { volume } => { let _ = updates.send(PlayerUpdate::Volume(volume)); }
                     PlayerEvent::ShuffleChanged { shuffle } => { let _ = updates.send(PlayerUpdate::Shuffle(shuffle)); }
