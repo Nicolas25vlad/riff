@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, fs};
 use crate::{
     fuzzy::{DEFAULT_THRESHOLD, rank_candidates},
     platform,
+    resolution_cache::ResolutionCache,
 };
 use env_logger::Env;
 use librespot::{
@@ -173,8 +174,24 @@ pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
     result
 }
 
+pub async fn resolve_requests(tracks: &[TrackRequest]) -> Result<Vec<String>, String> {
+    let session = discovery_session().await?;
+    let result = resolve_tracks_with_progress(&session, tracks, false).await;
+    session.shutdown();
+    result
+}
+
 async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Vec<String>, String> {
+    resolve_tracks_with_progress(session, tracks, true).await
+}
+
+async fn resolve_tracks_with_progress(
+    session: &Session,
+    tracks: &[TrackRequest],
+    verbose: bool,
+) -> Result<Vec<String>, String> {
     let mut resolved = Vec::with_capacity(tracks.len());
+    let mut resolution_cache = ResolutionCache::load();
 
     for (index, track) in tracks.iter().enumerate() {
         if let Some(uri) = track.id.as_deref() {
@@ -184,18 +201,43 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
                     track.label
                 ));
             }
-            println!("  [{}/{}] pinned {}", index + 1, tracks.len(), track.label);
-            println!("       -> {uri}");
+            if verbose {
+                println!("  [{}/{}] pinned {}", index + 1, tracks.len(), track.label);
+                println!("       -> {uri}");
+            }
             resolved.push(uri.to_string());
             continue;
         }
 
-        println!(
-            "  [{}/{}] resolving {}",
-            index + 1,
-            tracks.len(),
-            track.label
-        );
+        let cached_uri = resolution_cache
+            .as_ref()
+            .and_then(|cache| cache.get("spotify", &track.label))
+            .map(str::to_string);
+        if let Some(uri) = cached_uri {
+            if cached_track_is_valid(session, &uri).await {
+                if verbose {
+                    println!("  [{}/{}] cached {}", index + 1, tracks.len(), track.label);
+                    println!("       -> {uri}");
+                }
+                log::debug!("resolution cache hit for `{}` -> {uri}", track.label);
+                resolved.push(uri);
+                continue;
+            }
+            log::debug!(
+                "stale resolution cache entry for `{}` -> {uri}; resolving again",
+                track.label
+            );
+        } else {
+            log::debug!("resolution cache miss for `{}`", track.label);
+        }
+        if verbose {
+            println!(
+                "  [{}/{}] resolving {}",
+                index + 1,
+                tracks.len(),
+                track.label
+            );
+        }
         let candidates =
             smart_search_with_session(session, &track.label, 1, false, DEFAULT_THRESHOLD).await?;
         let candidate = candidates
@@ -207,11 +249,19 @@ async fn resolve_tracks(session: &Session, tracks: &[TrackRequest]) -> Result<Ve
             .get("match")
             .map(String::as_str)
             .unwrap_or("?");
-        println!(
-            "       -> {} ({}, {confidence}% match)",
-            candidate.display_name(),
-            candidate.uri
-        );
+        if verbose {
+            println!(
+                "       -> {} ({}, {confidence}% match)",
+                candidate.display_name(),
+                candidate.uri
+            );
+        }
+        if let Some(cache) = resolution_cache.as_mut() {
+            cache.insert("spotify", &track.label, &candidate.uri);
+            if let Err(error) = cache.save() {
+                log::debug!("could not persist resolution cache: {error}");
+            }
+        }
         resolved.push(candidate.uri);
     }
 
@@ -341,6 +391,13 @@ fn format_duration(duration_ms: i32) -> String {
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
     format!("{minutes}:{seconds:02}")
+}
+
+async fn cached_track_is_valid(session: &Session, uri: &str) -> bool {
+    let Ok(spotify_uri @ SpotifyUri::Track { .. }) = SpotifyUri::from_uri(uri) else {
+        return false;
+    };
+    SpotifyTrack::get(session, &spotify_uri).await.is_ok()
 }
 
 fn is_spotify_track_uri(uri: &str) -> bool {
