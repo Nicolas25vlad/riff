@@ -5,7 +5,7 @@ use crate::{
     platform,
     resolution_cache::ResolutionCache,
 };
-use env_logger::Env;
+use env_logger::{Env, Target};
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
     core::{
@@ -28,7 +28,7 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
-const FUZZY_CANDIDATE_POOL: usize = 30;
+const FUZZY_CANDIDATE_POOL: usize = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackRequest {
@@ -373,6 +373,7 @@ async fn enrich_candidate(
             .join(", "),
     );
     metadata.insert("album".into(), track.album.name.clone());
+    metadata.insert("album_year".into(), track.album.date.year().to_string());
     metadata.insert("duration".into(), format_duration(track.duration));
     metadata.insert("popularity".into(), track.popularity.to_string());
 
@@ -428,6 +429,35 @@ fn spotify_search_uri(query: &str) -> String {
 pub fn init_cli_logging() {
     let env = Env::default().filter_or("RIFF_LOG", "riff=info,librespot=info");
     let _ = env_logger::Builder::from_env(env).try_init();
+}
+
+pub fn init_tui_logging() -> Result<std::path::PathBuf, String> {
+    let log_path = platform::tui_log_path()?;
+    let parent = log_path
+        .parent()
+        .ok_or_else(|| "could not determine TUI log directory".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("could not create TUI log directory: {err}"))?;
+    platform::secure_cache_dir(parent)?;
+
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|err| {
+            format!(
+                "could not open TUI log file `{}`: {err}",
+                log_path.display()
+            )
+        })?;
+    let env = Env::default().filter_or("RIFF_LOG", "riff=warn,librespot=warn");
+    env_logger::Builder::from_env(env)
+        .target(Target::Pipe(Box::new(file)))
+        .format_timestamp_secs()
+        .try_init()
+        .map_err(|err| format!("could not initialize TUI file logging: {err}"))?;
+    log::debug!("TUI logging initialized at {}", log_path.display());
+    Ok(log_path)
 }
 
 fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, String> {
