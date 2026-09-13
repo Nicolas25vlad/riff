@@ -48,6 +48,7 @@ const VOLUME_MAX: u16 = u16::MAX;
 const VOLUME_STEP_PERCENT: i16 = 5;
 const VOLUME_SEND_INTERVAL: Duration = Duration::from_millis(60);
 const SEEK_STEP_MS: u32 = 5_000;
+const COMPACT_TRANSPORT_WIDTH: u16 = 72;
 
 struct RenderedArtwork {
     wide: Protocol,
@@ -1550,30 +1551,60 @@ fn highlight_riff_line(source: &str, theme: Theme) -> Vec<Span<'_>> {
     spans
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportMode {
+    Compact,
+    Wide,
+}
+
+fn transport_mode(width: u16) -> TransportMode {
+    if width < COMPACT_TRANSPORT_WIDTH {
+        TransportMode::Compact
+    } else {
+        TransportMode::Wide
+    }
+}
+
 fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
+    let mode = transport_mode(area.width);
+    let compact = mode == TransportMode::Compact;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Length(2)])
         .split(area);
-    let top = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
+    let constraints = if compact {
+        [
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Min(7),
+            Constraint::Length(10),
+        ]
+    } else {
+        [
             Constraint::Length(8),
             Constraint::Length(8),
             Constraint::Length(8),
             Constraint::Min(10),
             Constraint::Length(20),
-        ])
+        ]
+    };
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
         .split(rows[0]);
-    let previous = Paragraph::new(" ◀ prev ")
+    let previous_label = if compact { " ◀ " } else { " ◀ prev " };
+    let toggle_label = match (compact, workbench.state.status == PlaybackStatus::Playing) {
+        (true, true) => " Ⅱ ",
+        (true, false) => " ▶ ",
+        (false, true) => " Ⅱ pause ",
+        (false, false) => " ▶ play ",
+    };
+    let next_label = if compact { " ▶ " } else { " next ▶ " };
+    let previous = Paragraph::new(previous_label)
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.accent));
-    let toggle_label = if workbench.state.status == PlaybackStatus::Playing {
-        " Ⅱ pause "
-    } else {
-        " ▶ play "
-    };
     let toggle = Paragraph::new(toggle_label)
         .alignment(Alignment::Center)
         .style(
@@ -1581,7 +1612,7 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         );
-    let next = Paragraph::new(" next ▶ ")
+    let next = Paragraph::new(next_label)
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.accent));
     frame.render_widget(previous, top[0]);
@@ -1591,25 +1622,30 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
     workbench.state.hits.toggle = Some(top[1]);
     workbench.state.hits.next = Some(top[2]);
 
-    let flags = format!(
-        "{} shuffle   {} repeat",
-        if workbench.state.shuffle {
-            "●"
-        } else {
-            "○"
-        },
-        if workbench.state.repeat { "●" } else { "○" }
-    );
+    let shuffle = if workbench.state.shuffle {
+        "●"
+    } else {
+        "○"
+    };
+    let repeat = if workbench.state.repeat { "●" } else { "○" };
+    let flags = if compact {
+        format!("{shuffle} S  {repeat} R")
+    } else {
+        format!("{shuffle} shuffle   {repeat} repeat")
+    };
     frame.render_widget(
         Paragraph::new(flags).style(Style::default().fg(theme.muted)),
         top[3],
     );
     let volume_percent = volume_percent(workbench.state.volume);
     let volume_ratio = volume_percent as f64 / 100.0;
+    let volume_label = if compact {
+        format!("{volume_percent}%")
+    } else {
+        format!("vol {volume_percent:>3}%")
+    };
     frame.render_widget(
-        Gauge::default()
-            .ratio(volume_ratio)
-            .label(format!("vol {volume_percent:>3}%")),
+        Gauge::default().ratio(volume_ratio).label(volume_label),
         top[4],
     );
     workbench.state.hits.volume = Some(top[4]);
@@ -1643,7 +1679,7 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
         View::Editor => {
             " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ".to_string()
         }
-        _ => global_status_hint(),
+        _ => global_status_hint(area.width < COMPACT_TRANSPORT_WIDTH),
     };
     frame.render_widget(
         Paragraph::new(hint)
@@ -1661,6 +1697,15 @@ fn format_duration(duration_ms: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_mode_switches_at_compact_breakpoint() {
+        assert_eq!(
+            transport_mode(COMPACT_TRANSPORT_WIDTH - 1),
+            TransportMode::Compact
+        );
+        assert_eq!(transport_mode(COMPACT_TRANSPORT_WIDTH), TransportMode::Wide);
+    }
 
     #[test]
     fn formats_transport_time() {
