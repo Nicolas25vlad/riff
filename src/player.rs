@@ -28,7 +28,7 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
 ];
-const FUZZY_CANDIDATE_POOL: usize = 30;
+const FUZZY_CANDIDATE_POOL: usize = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackRequest {
@@ -373,6 +373,7 @@ async fn enrich_candidate(
             .join(", "),
     );
     metadata.insert("album".into(), track.album.name.clone());
+    metadata.insert("album_year".into(), track.album.date.year().to_string());
     metadata.insert("duration".into(), format_duration(track.duration));
     metadata.insert("popularity".into(), track.popularity.to_string());
 
