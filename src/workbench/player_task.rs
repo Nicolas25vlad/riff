@@ -295,6 +295,9 @@ pub async fn run_player(
                     }
                     PlayerEvent::Preloading { track_id } => {
                         let uri = track_id.to_string();
+                        preload_started.retain(|_, started_at| {
+                            started_at.elapsed() < Duration::from_secs(180)
+                        });
                         preload_started.insert(uri.clone(), Instant::now());
                         log::debug!("playback transition event=preloading target={uri}");
                     }
@@ -330,7 +333,18 @@ pub async fn run_player(
                         }
                     }
                     PlayerEvent::Unavailable { track_id, .. } => {
-                        log::debug!("playback transition event=unavailable track={}", track_id);
+                        let uri = track_id.to_string();
+                        preload_started.remove(&uri);
+                        if let Some(probe) = transition_probe.take() {
+                            log::debug!(
+                                "playback transition event=unavailable trigger={} track={} elapsed_ms={}",
+                                probe.trigger,
+                                uri,
+                                probe.elapsed_ms()
+                            );
+                        } else {
+                            log::debug!("playback transition event=unavailable track={uri}");
+                        }
                     }
                     PlayerEvent::TrackChanged { audio_item } => {
                         log::debug!("playback transition event=track-changed track={}", audio_item.uri);
