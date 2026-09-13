@@ -36,7 +36,7 @@ use riff::Playlist;
 use tokio::sync::mpsc;
 
 use editor::EditorState;
-use input::{Action, action_for_key};
+use input::{Action, action_for_key, global_status_hint};
 use model::{AppState, HitMap, LyricsState, PlaybackStatus, QueueItem, SearchState, View};
 use player_task::{Control, PlayerUpdate};
 use theme::Theme;
@@ -1613,11 +1613,13 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let theme = workbench.state.theme;
     let hint = match workbench.state.view {
-        View::Search => " Enter search/play · ↑↓ select · Ctrl+A add · Ctrl+P play · Esc back ",
-        View::Editor => " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ",
-        _ => {
-            " Tab views · Space play/pause · h/l prev/next · +/- volume · [/] seek · s shuffle · r repeat · F6 theme · q quit "
+        View::Search => {
+            " Enter search/play · ↑↓ select · Ctrl+A add · Ctrl+P play · Esc back ".to_string()
         }
+        View::Editor => {
+            " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ".to_string()
+        }
+        _ => global_status_hint(),
     };
     frame.render_widget(
         Paragraph::new(hint)
