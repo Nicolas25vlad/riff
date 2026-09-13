@@ -1,0 +1,99 @@
+name: Bootstrap reproducible builds
+
+on:
+  push:
+    branches: [chore/reproducible-builds]
+    paths:
+      - .github/workflows/bootstrap-reproducible-builds.yml
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: chore/reproducible-builds
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Cargo.lock
+        run: cargo generate-lockfile
+
+      - name: Apply locked-build policy
+        shell: python
+        run: |
+          from pathlib import Path
+
+          replacements = {
+              "install.sh": [
+                  ('cargo install --git "$REPO" --force', 'cargo install --git "$REPO" --force --locked'),
+              ],
+              "install.ps1": [
+                  ('cargo install --git $Repo --force', 'cargo install --git $Repo --force --locked'),
+              ],
+              "INSTALL.md": [
+                  ('cargo install riff-music\n', 'cargo install riff-music --locked\n'),
+                  ('cargo install riff-music --force\n', 'cargo install riff-music --force --locked\n'),
+                  ('cargo install --git https://github.com/Nicolas25vlad/riff --force\n', 'cargo install --git https://github.com/Nicolas25vlad/riff --force --locked\n'),
+                  ('cargo build --release\n', 'cargo build --release --locked\n'),
+              ],
+              "scripts/deps.sh": [
+                  ('cargo fetch\n', 'cargo fetch --locked\n'),
+                  ('cargo tree >/dev/null\n', 'cargo tree --locked >/dev/null\n'),
+                  ('cargo check --all-targets --all-features\n', 'cargo check --locked --all-targets --all-features\n'),
+              ],
+              ".github/workflows/ci.yml": [
+                  ('cargo clippy --all-targets --all-features -- -D warnings', 'cargo clippy --locked --all-targets --all-features -- -D warnings'),
+                  ('cargo test --all-features --no-fail-fast', 'cargo test --locked --all-features --no-fail-fast'),
+                  ('cargo check --all-targets --all-features', 'cargo check --locked --all-targets --all-features'),
+                  ('cargo build --all-features', 'cargo build --locked --all-features'),
+              ],
+              ".github/workflows/remote-lab.yml": [
+                  ('cargo build --release --all-features', 'cargo build --locked --release --all-features'),
+              ],
+              ".github/workflows/release.yml": [
+                  ('cargo build --release', 'cargo build --locked --release'),
+                  ('cargo publish --dry-run', 'cargo publish --locked --dry-run'),
+                  ('cargo publish\n', 'cargo publish --locked\n'),
+              ],
+          }
+
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              text = path.read_text()
+              original = text
+              for old, new in pairs:
+                  text = text.replace(old, new)
+              if text == original:
+                  print(f"warning: no changes in {filename}")
+              path.write_text(text)
+
+          cargo_toml = Path("Cargo.toml")
+          text = cargo_toml.read_text()
+          marker = '# Keep this exact pin until a crates.io librespot release includes upstream fix #1683.'
+          replacement = marker + '\n# Cargo.lock is committed for this binary application; CI/install/release paths use --locked.'
+          if replacement not in text:
+              text = text.replace(marker, replacement)
+          cargo_toml.write_text(text)
+
+      - name: Verify lockfile resolves
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Remove bootstrap workflow
+        run: rm .github/workflows/bootstrap-reproducible-builds.yml
+
+      - name: Commit generated lockfile and policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock Cargo.toml install.sh install.ps1 INSTALL.md scripts/deps.sh .github/workflows/ci.yml .github/workflows/remote-lab.yml .github/workflows/release.yml .github/workflows/bootstrap-reproducible-builds.yml
+          git commit -m 'chore(build): commit lockfile and enforce locked builds'
+          git push origin HEAD:chore/reproducible-builds
