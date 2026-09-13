@@ -74,11 +74,11 @@ pub fn secure_cache_dir(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = fs::metadata(path)
-        .map_err(|err| format!("could not inspect Spotify cache permissions: {err}"))?
+        .map_err(|err| format!("could not inspect cache directory permissions: {err}"))?
         .permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(path, permissions)
-        .map_err(|err| format!("could not secure Spotify cache directory: {err}"))
+        .map_err(|err| format!("could not secure cache directory: {err}"))
 }
 
 #[cfg(not(unix))]
