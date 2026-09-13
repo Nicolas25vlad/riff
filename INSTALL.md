@@ -7,7 +7,7 @@ Riff is published on crates.io as `riff-music`. The installed executable is name
 If Rust/Cargo is already installed, this is the preferred installation path on Linux, WSL and Windows:
 
 ```bash
-cargo install riff-music
+cargo install riff-music --locked
 ```
 
 Verify:
@@ -59,7 +59,7 @@ Requirements for building/installing through Cargo:
 Install from crates.io:
 
 ```powershell
-cargo install riff-music
+cargo install riff-music --locked
 ```
 
 The repository PowerShell installer is also available:
@@ -144,13 +144,13 @@ riff inspect playlist.riff
 For crates.io installations:
 
 ```bash
-cargo install riff-music --force
+cargo install riff-music --force --locked
 ```
 
 If you intentionally installed the GitHub build instead, rerun the platform installer or use:
 
 ```bash
-cargo install --git https://github.com/Nicolas25vlad/riff --force
+cargo install --git https://github.com/Nicolas25vlad/riff --force --locked
 ```
 
 ## Uninstall
@@ -175,7 +175,7 @@ Linux / WSL:
 git clone https://github.com/Nicolas25vlad/riff.git
 cd riff
 bash scripts/deps.sh install
-cargo build --release
+cargo build --release --locked
 ```
 
 Windows PowerShell:
@@ -183,7 +183,7 @@ Windows PowerShell:
 ```powershell
 git clone https://github.com/Nicolas25vlad/riff.git
 cd riff
-cargo build --release
+cargo build --release --locked
 ```
 
 The binary is written under `target/release/` (`riff` on Unix-like systems, `riff.exe` on Windows).
