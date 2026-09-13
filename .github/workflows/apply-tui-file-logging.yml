@@ -1,0 +1,50 @@
+name: Apply TUI file logging
+
+on:
+  push:
+    branches: [fix/tui-file-logging]
+    paths:
+      - .github/workflows/apply-tui-file-logging.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/tui-file-logging
+
+      - name: Apply TUI file logger
+        run: python scripts/apply_tui_file_logging.py
+
+      - name: Install Linux audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Test
+        run: cargo test --locked --all-features --no-fail-fast
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/main.rs src/player.rs src/platform.rs
+          git commit -m 'fix(tui): route diagnostics to cache log file'
+          git push origin HEAD:fix/tui-file-logging
