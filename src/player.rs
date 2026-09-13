@@ -209,21 +209,27 @@ async fn resolve_tracks_with_progress(
             continue;
         }
 
-        if let Some(uri) = resolution_cache
+        let cached_uri = resolution_cache
             .as_ref()
             .and_then(|cache| cache.get("spotify", &track.label))
-            .filter(|uri| is_spotify_track_uri(uri))
-        {
-            if verbose {
-                println!("  [{}/{}] cached {}", index + 1, tracks.len(), track.label);
-                println!("       -> {uri}");
+            .map(str::to_string);
+        if let Some(uri) = cached_uri {
+            if cached_track_is_valid(session, &uri).await {
+                if verbose {
+                    println!("  [{}/{}] cached {}", index + 1, tracks.len(), track.label);
+                    println!("       -> {uri}");
+                }
+                log::debug!("resolution cache hit for `{}` -> {uri}", track.label);
+                resolved.push(uri);
+                continue;
             }
-            log::debug!("resolution cache hit for `{}` -> {uri}", track.label);
-            resolved.push(uri.to_string());
-            continue;
+            log::debug!(
+                "stale resolution cache entry for `{}` -> {uri}; resolving again",
+                track.label
+            );
+        } else {
+            log::debug!("resolution cache miss for `{}`", track.label);
         }
-
-        log::debug!("resolution cache miss for `{}`", track.label);
         if verbose {
             println!(
                 "  [{}/{}] resolving {}",
@@ -385,6 +391,13 @@ fn format_duration(duration_ms: i32) -> String {
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
     format!("{minutes}:{seconds:02}")
+}
+
+async fn cached_track_is_valid(session: &Session, uri: &str) -> bool {
+    let Ok(spotify_uri @ SpotifyUri::Track { .. }) = SpotifyUri::from_uri(uri) else {
+        return false;
+    };
+    SpotifyTrack::get(session, &spotify_uri).await.is_ok()
 }
 
 fn is_spotify_track_uri(uri: &str) -> bool {
