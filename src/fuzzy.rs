@@ -64,6 +64,7 @@ pub fn rank_candidates(
         b_score
             .cmp(&a_score)
             .then_with(|| version_penalty(a).cmp(&version_penalty(b)))
+            .then_with(|| release_year(a).cmp(&release_year(b)))
             .then_with(|| popularity(b).cmp(&popularity(a)))
             .then_with(|| a.uri.cmp(&b.uri))
     });
@@ -185,6 +186,15 @@ fn version_penalty(candidate: &SearchCandidate) -> u8 {
     .count() as u8
 }
 
+fn release_year(candidate: &SearchCandidate) -> i32 {
+    candidate
+        .metadata
+        .get("album_year")
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|year| *year > 0)
+        .unwrap_or(i32::MAX)
+}
+
 fn popularity(candidate: &SearchCandidate) -> i32 {
     candidate
         .metadata
@@ -199,14 +209,30 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn candidate(title: &str, artist: &str) -> SearchCandidate {
+        candidate_with_release(title, artist, "Studio Album", 1970, 80, None)
+    }
+
+    fn candidate_with_release(
+        title: &str,
+        artist: &str,
+        album: &str,
+        year: i32,
+        popularity: i32,
+        version: Option<&str>,
+    ) -> SearchCandidate {
+        let mut metadata = BTreeMap::from([
+            ("title".into(), title.into()),
+            ("artist".into(), artist.into()),
+            ("album".into(), album.into()),
+            ("album_year".into(), year.to_string()),
+            ("popularity".into(), popularity.to_string()),
+        ]);
+        if let Some(version) = version {
+            metadata.insert("version".into(), version.into());
+        }
         SearchCandidate {
-            uri: format!("spotify:track:{title}"),
-            metadata: BTreeMap::from([
-                ("title".into(), title.into()),
-                ("artist".into(), artist.into()),
-                ("album".into(), "Paranoid".into()),
-                ("popularity".into(), "80".into()),
-            ]),
+            uri: format!("spotify:track:{title}:{album}:{year}"),
+            metadata,
         }
     }
 
@@ -237,5 +263,66 @@ mod tests {
     #[test]
     fn normalizes_punctuation_and_case() {
         assert_eq!(normalize("WAR-PIGS!!"), "war pigs");
+    }
+
+    #[test]
+    fn prefers_earlier_release_for_equally_strong_studio_matches() {
+        let later_compilation = candidate_with_release(
+            "Signal Fire",
+            "The Foundry",
+            "Collected Works",
+            2005,
+            95,
+            None,
+        );
+        let original_album = candidate_with_release(
+            "Signal Fire",
+            "The Foundry",
+            "First Pressing",
+            1972,
+            70,
+            None,
+        );
+
+        let ranked = rank_candidates(
+            "The Foundry Signal Fire",
+            vec![later_compilation, original_album],
+            false,
+            DEFAULT_THRESHOLD,
+        );
+
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].metadata["album_year"], "1972");
+    }
+
+    #[test]
+    fn keeps_alternate_versions_but_ranks_clean_studio_release_first() {
+        let live = candidate_with_release(
+            "Signal Fire",
+            "The Foundry",
+            "Live Archive",
+            1971,
+            99,
+            Some("Live"),
+        );
+        let studio = candidate_with_release(
+            "Signal Fire",
+            "The Foundry",
+            "First Pressing",
+            1972,
+            70,
+            None,
+        );
+
+        let ranked = rank_candidates(
+            "The Foundry Signal Fire",
+            vec![live, studio],
+            false,
+            DEFAULT_THRESHOLD,
+        );
+
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].metadata["album"], "First Pressing");
+        assert_eq!(ranked[1].metadata["version"], "Live");
     }
 }
