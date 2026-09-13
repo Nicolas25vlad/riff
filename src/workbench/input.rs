@@ -63,20 +63,44 @@ mod tests {
 
     #[test]
     fn transport_aliases_map_to_actions() {
-        assert_eq!(action_for_key(key(KeyCode::Char(' '))), Some(Action::TogglePlayback));
-        assert_eq!(action_for_key(key(KeyCode::Char('n'))), Some(Action::NextTrack));
-        assert_eq!(action_for_key(key(KeyCode::Char('l'))), Some(Action::NextTrack));
+        assert_eq!(
+            action_for_key(key(KeyCode::Char(' '))),
+            Some(Action::TogglePlayback)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('n'))),
+            Some(Action::NextTrack)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('l'))),
+            Some(Action::NextTrack)
+        );
         assert_eq!(action_for_key(key(KeyCode::Right)), Some(Action::NextTrack));
-        assert_eq!(action_for_key(key(KeyCode::Char('p'))), Some(Action::PreviousTrack));
-        assert_eq!(action_for_key(key(KeyCode::Char('h'))), Some(Action::PreviousTrack));
-        assert_eq!(action_for_key(key(KeyCode::Left)), Some(Action::PreviousTrack));
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('p'))),
+            Some(Action::PreviousTrack)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('h'))),
+            Some(Action::PreviousTrack)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Left)),
+            Some(Action::PreviousTrack)
+        );
     }
 
     #[test]
     fn navigation_and_view_shortcuts_are_actions() {
         assert_eq!(action_for_key(key(KeyCode::Tab)), Some(Action::NextView));
-        assert_eq!(action_for_key(key(KeyCode::BackTab)), Some(Action::PreviousView));
-        assert_eq!(action_for_key(key(KeyCode::Char('/'))), Some(Action::SetView(View::Search)));
+        assert_eq!(
+            action_for_key(key(KeyCode::BackTab)),
+            Some(Action::PreviousView)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('/'))),
+            Some(Action::SetView(View::Search))
+        );
         assert_eq!(
             action_for_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT)),
             Some(Action::SetView(View::Lyrics))
@@ -85,12 +109,30 @@ mod tests {
 
     #[test]
     fn playback_adjustments_are_action_based() {
-        assert_eq!(action_for_key(key(KeyCode::Char('+'))), Some(Action::VolumeUp));
-        assert_eq!(action_for_key(key(KeyCode::Char('-'))), Some(Action::VolumeDown));
-        assert_eq!(action_for_key(key(KeyCode::Char(']'))), Some(Action::SeekForward));
-        assert_eq!(action_for_key(key(KeyCode::Char('['))), Some(Action::SeekBackward));
-        assert_eq!(action_for_key(key(KeyCode::Char('s'))), Some(Action::ToggleShuffle));
-        assert_eq!(action_for_key(key(KeyCode::Char('r'))), Some(Action::ToggleRepeat));
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('+'))),
+            Some(Action::VolumeUp)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('-'))),
+            Some(Action::VolumeDown)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char(']'))),
+            Some(Action::SeekForward)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('['))),
+            Some(Action::SeekBackward)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('s'))),
+            Some(Action::ToggleShuffle)
+        );
+        assert_eq!(
+            action_for_key(key(KeyCode::Char('r'))),
+            Some(Action::ToggleRepeat)
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 mod editor;
 mod git_context;
+mod input;
 mod model;
 mod player_task;
 mod theme;
@@ -35,6 +36,7 @@ use riff::Playlist;
 use tokio::sync::mpsc;
 
 use editor::EditorState;
+use input::{Action, action_for_key};
 use model::{AppState, HitMap, LyricsState, PlaybackStatus, QueueItem, SearchState, View};
 use player_task::{Control, PlayerUpdate};
 use theme::Theme;
@@ -533,6 +535,48 @@ fn render_artwork(
     }
 }
 
+fn apply_action(
+    workbench: &mut Workbench,
+    action: Action,
+    controls: &mpsc::UnboundedSender<Control>,
+) -> bool {
+    match action {
+        Action::NextView => workbench.state.view = workbench.state.view.next(),
+        Action::PreviousView => workbench.state.view = workbench.state.view.previous(),
+        Action::SetView(view) => workbench.state.view = view,
+        Action::CycleTheme => {
+            workbench.state.theme = workbench.state.theme.next();
+            workbench.state.message = format!("theme · {}", workbench.state.theme.name);
+        }
+        Action::Quit => {
+            let _ = controls.send(Control::Quit);
+            return true;
+        }
+        Action::TogglePlayback => {
+            let _ = controls.send(Control::Toggle);
+        }
+        Action::NextTrack => {
+            let _ = controls.send(Control::Next);
+        }
+        Action::PreviousTrack => {
+            let _ = controls.send(Control::Previous);
+        }
+        Action::VolumeUp => adjust_volume(workbench, VOLUME_STEP_PERCENT, controls),
+        Action::VolumeDown => adjust_volume(workbench, -VOLUME_STEP_PERCENT, controls),
+        Action::SeekForward => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
+        Action::SeekBackward => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
+        Action::ToggleShuffle => {
+            let enabled = !workbench.state.shuffle;
+            let _ = controls.send(Control::Shuffle(enabled));
+        }
+        Action::ToggleRepeat => {
+            let enabled = !workbench.state.repeat;
+            let _ = controls.send(Control::Repeat(enabled));
+        }
+    }
+    false
+}
+
 fn handle_key(
     workbench: &mut Workbench,
     key: KeyEvent,
@@ -545,60 +589,9 @@ fn handle_key(
         return handle_search_key(workbench, key, controls);
     }
 
-    if key.modifiers.contains(KeyModifiers::ALT) {
-        match key.code {
-            KeyCode::Char('1') => workbench.state.view = View::NowPlaying,
-            KeyCode::Char('2') => workbench.state.view = View::Search,
-            KeyCode::Char('3') => workbench.state.view = View::Playlist,
-            KeyCode::Char('4') => workbench.state.view = View::Lyrics,
-            KeyCode::Char('5') => workbench.state.view = View::Editor,
-            _ => {}
-        }
-        return Ok(false);
-    }
-
-    match key.code {
-        KeyCode::Tab => workbench.state.view = workbench.state.view.next(),
-        KeyCode::BackTab => workbench.state.view = workbench.state.view.previous(),
-        KeyCode::F(6) => {
-            workbench.state.theme = workbench.state.theme.next();
-            workbench.state.message = format!("theme · {}", workbench.state.theme.name);
-        }
-        KeyCode::Char('q') | KeyCode::Esc => {
-            let _ = controls.send(Control::Quit);
-            return Ok(true);
-        }
-        KeyCode::Char(' ') => {
-            let _ = controls.send(Control::Toggle);
-        }
-        KeyCode::Char('n') | KeyCode::Char('l') | KeyCode::Right => {
-            let _ = controls.send(Control::Next);
-        }
-        KeyCode::Char('p') | KeyCode::Char('h') | KeyCode::Left => {
-            let _ = controls.send(Control::Previous);
-        }
-        KeyCode::Char('+') | KeyCode::Char('=') => {
-            adjust_volume(workbench, VOLUME_STEP_PERCENT, controls);
-        }
-        KeyCode::Char('-') => {
-            adjust_volume(workbench, -VOLUME_STEP_PERCENT, controls);
-        }
-        KeyCode::Char(']') => seek_relative(workbench, SEEK_STEP_MS as i64, controls),
-        KeyCode::Char('[') => seek_relative(workbench, -(SEEK_STEP_MS as i64), controls),
-        KeyCode::Char('s') => {
-            let enabled = !workbench.state.shuffle;
-            let _ = controls.send(Control::Shuffle(enabled));
-        }
-        KeyCode::Char('r') => {
-            let enabled = !workbench.state.repeat;
-            let _ = controls.send(Control::Repeat(enabled));
-        }
-        KeyCode::Char('/') => workbench.state.view = View::Search,
-        KeyCode::Char('e') => workbench.state.view = View::Editor,
-        KeyCode::Char('y') => workbench.state.view = View::Lyrics,
-        _ => {}
-    }
-    Ok(false)
+    Ok(action_for_key(key)
+        .map(|action| apply_action(workbench, action, controls))
+        .unwrap_or(false))
 }
 
 fn handle_search_key(
