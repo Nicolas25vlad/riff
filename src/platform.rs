@@ -23,34 +23,36 @@ pub fn audio_sink_builder() -> Result<SinkBuilder, String> {
     audio_backend::find(None).ok_or_else(|| "no supported audio backend was found".to_string())
 }
 
-pub fn spotify_cache_dir() -> Result<PathBuf, String> {
+pub fn riff_cache_dir() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("XDG_CACHE_HOME") {
-        return Ok(PathBuf::from(path).join("riff").join("spotify"));
+        return Ok(PathBuf::from(path).join("riff"));
     }
 
     if cfg!(target_os = "windows") {
         if let Some(path) = env::var_os("LOCALAPPDATA") {
-            return Ok(PathBuf::from(path).join("Riff").join("spotify"));
+            return Ok(PathBuf::from(path).join("Riff"));
         }
         if let Some(path) = env::var_os("USERPROFILE") {
-            return Ok(PathBuf::from(path)
-                .join(".cache")
-                .join("riff")
-                .join("spotify"));
+            return Ok(PathBuf::from(path).join(".cache").join("riff"));
         }
     }
 
     if let Some(path) = env::var_os("HOME") {
-        return Ok(PathBuf::from(path)
-            .join(".cache")
-            .join("riff")
-            .join("spotify"));
+        return Ok(PathBuf::from(path).join(".cache").join("riff"));
     }
 
     Err(
         "could not determine a cache directory; set XDG_CACHE_HOME or a platform home directory"
             .to_string(),
     )
+}
+
+pub fn spotify_cache_dir() -> Result<PathBuf, String> {
+    Ok(riff_cache_dir()?.join("spotify"))
+}
+
+pub fn tui_log_path() -> Result<PathBuf, String> {
+    Ok(riff_cache_dir()?.join("tui.log"))
 }
 
 pub fn is_wsl() -> bool {
@@ -72,11 +74,11 @@ pub fn secure_cache_dir(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = fs::metadata(path)
-        .map_err(|err| format!("could not inspect Spotify cache permissions: {err}"))?
+        .map_err(|err| format!("could not inspect cache directory permissions: {err}"))?
         .permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(path, permissions)
-        .map_err(|err| format!("could not secure Spotify cache directory: {err}"))
+        .map_err(|err| format!("could not secure cache directory: {err}"))
 }
 
 #[cfg(not(unix))]
