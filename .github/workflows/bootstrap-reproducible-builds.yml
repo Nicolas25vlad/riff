@@ -67,11 +67,8 @@ jobs:
           for filename, pairs in replacements.items():
               path = Path(filename)
               text = path.read_text()
-              original = text
               for old, new in pairs:
                   text = text.replace(old, new)
-              if text == original:
-                  print(f"warning: no changes in {filename}")
               path.write_text(text)
 
           cargo_toml = Path("Cargo.toml")
@@ -85,15 +82,12 @@ jobs:
       - name: Verify lockfile resolves
         run: cargo metadata --locked --format-version 1 > /dev/null
 
-      - name: Remove bootstrap workflow
-        run: rm .github/workflows/bootstrap-reproducible-builds.yml
-
       - name: Commit generated lockfile and policy
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.lock Cargo.toml install.sh install.ps1 INSTALL.md scripts/deps.sh .github/workflows/ci.yml .github/workflows/remote-lab.yml .github/workflows/release.yml .github/workflows/bootstrap-reproducible-builds.yml
+          git add Cargo.lock Cargo.toml install.sh install.ps1 INSTALL.md scripts/deps.sh .github/workflows/ci.yml .github/workflows/remote-lab.yml .github/workflows/release.yml
           git commit -m 'chore(build): commit lockfile and enforce locked builds'
           git push origin HEAD:chore/reproducible-builds
