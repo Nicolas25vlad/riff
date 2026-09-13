@@ -89,6 +89,16 @@ pub enum PlayerUpdate {
 }
 
 pub async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String> {
+    let requests = playlist
+        .tracks
+        .iter()
+        .map(|track| player::TrackRequest {
+            label: track.label.clone(),
+            id: track.id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let resolved = player::resolve_requests(&requests).await?;
+
     let (session_config, cache, credentials) = session_parts()?;
     let session = Session::new(session_config, Some(cache));
     session
@@ -96,19 +106,8 @@ pub async fn resolve_queue(playlist: &Playlist) -> Result<Vec<QueueItem>, String
         .await
         .map_err(|err| format!("could not connect to Spotify for TUI metadata: {err}"))?;
 
-    let mut queue = Vec::with_capacity(playlist.tracks.len());
-    for request in &playlist.tracks {
-        let uri = if let Some(uri) = request.id.as_deref() {
-            uri.to_string()
-        } else {
-            player::search(&request.label, 1)
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| format!("no confident Spotify track found for `{}`", request.label))?
-                .uri
-        };
-
+    let mut queue = Vec::with_capacity(resolved.len());
+    for uri in resolved {
         queue.push(queue_item_from_uri(&session, &uri).await?);
     }
 
