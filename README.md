@@ -94,18 +94,43 @@ The interface also includes:
 ### Core controls
 
 ```text
-Space        Play / pause
-n / Right    Next track
-p / Left     Previous track
-h / l        Previous / next aliases
-1..5         Switch Workbench views
-F6           Cycle theme
-q / Esc      Leave the Workbench
+Space          Play / pause
+n / l / Right  Next track
+p / h / Left   Previous track
++ / -          Volume up / down
+[ / ]          Seek backward / forward
+s / r          Toggle shuffle / repeat
+Tab            Next Workbench view
+Shift+Tab      Previous Workbench view
+Alt+1..5       Jump directly to a Workbench view
+/              Open Search
+e              Open Editor
+y              Open Lyrics
+F6             Cycle theme
+q / Esc        Leave the Workbench
 ```
 
 Mouse behavior is contextual: scrolling Search navigates results, while scrolling over the volume control changes volume. Unrelated scrolling does not alter playback.
 
 The built-in editor follows familiar nano-style shortcuts such as `Ctrl+S` to save, `Ctrl+K` to cut a line, `Ctrl+U` to paste and `Ctrl+X` to leave the editor.
+
+### TUI diagnostics
+
+The Workbench never writes diagnostics over the alternate-screen UI. TUI logs are written to Riff's cache directory instead.
+
+On Linux with the default cache layout, the log file is:
+
+```text
+~/.cache/riff/tui.log
+```
+
+`XDG_CACHE_HOME` is respected, and Windows uses its platform cache location. Enable verbose diagnostics with:
+
+```bash
+RIFF_LOG=debug riff tui coding-metal.riff
+```
+
+This is useful when investigating provider resolution, playback transitions, artwork/lyrics failures or other runtime behavior without corrupting the TUI.
 
 ## CLI
 
@@ -159,10 +184,10 @@ Riff is usable today, but still evolving quickly.
 
 Current near-term work includes:
 
-- caching resolved tracks across repeated playlist loads;
 - incremental resolution so large playlists can start playing immediately;
+- measuring and reducing track-transition latency around librespot's preload behavior;
 - stronger streaming resilience on unstable connections;
-- continued TUI layout and interaction polish;
+- continued TUI footer, playlist and interaction polish;
 - decoded-PCM visualizers;
 - richer queue/runtime state;
 - configuration and keybinding customization.
