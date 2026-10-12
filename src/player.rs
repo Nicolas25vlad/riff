@@ -9,7 +9,7 @@ use env_logger::{Env, Target};
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc},
     core::{
-        SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig,
+        SpotifyId, SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig,
         session::Session,
     },
     metadata::{Metadata, Track as SpotifyTrack},
@@ -18,9 +18,11 @@ use librespot::{
         config::{AudioFormat, PlayerConfig},
         mixer,
         mixer::MixerConfig,
-        player::Player,
+        player::{Player, PlayerEvent},
     },
 };
+use serde::Deserialize;
+use tokio::sync::mpsc;
 
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const OAUTH_SCOPES: &[&str] = &[
@@ -59,6 +61,7 @@ pub struct PlayerOptions {
     pub context_uri: Option<String>,
     pub tracks: Vec<TrackRequest>,
     pub device_name: String,
+    pub auto_radio: bool,
 }
 
 impl Default for PlayerOptions {
@@ -67,6 +70,7 @@ impl Default for PlayerOptions {
             context_uri: None,
             tracks: Vec::new(),
             device_name: "Riff".to_string(),
+            auto_radio: false,
         }
     }
 }
@@ -94,6 +98,16 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
         mixer.get_soft_volume(),
         move || sink_builder(None, audio_format),
     );
+    let mut player_events = player.get_player_event_channel();
+    let (radio_tx, mut radio_rx) = mpsc::unbounded_channel();
+    let auto_radio = options.auto_radio
+        || options.tracks.len() == 1
+        || options
+            .context_uri
+            .as_deref()
+            .is_some_and(is_spotify_track_uri);
+    let mut radio_last_uri = None;
+    let mut radio_pending = false;
 
     let (spirc, spirc_task) =
         Spirc::new(connect_config, session.clone(), credentials, player, mixer)
@@ -107,6 +121,9 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     if !options.tracks.is_empty() {
         let resolved = resolve_tracks(&session, &options.tracks).await?;
         println!("Resolved {} track(s). Starting playlist...", resolved.len());
+        if auto_radio {
+            radio_last_uri = resolved.last().cloned();
+        }
         spirc
             .load(LoadRequest::from_tracks(
                 resolved,
@@ -117,6 +134,9 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
             .play()
             .map_err(|err| format!("could not start playlist playback: {err}"))?;
     } else if let Some(uri) = options.context_uri.as_ref() {
+        if auto_radio && is_spotify_track_uri(uri) {
+            radio_last_uri = Some(uri.clone());
+        }
         spirc
             .load(LoadRequest::from_context_uri(
                 uri.clone(),
@@ -135,16 +155,128 @@ pub async fn run(options: PlayerOptions) -> Result<(), String> {
     println!("Playback diagnostics are enabled. For full logs: RIFF_LOG=debug riff player");
     println!("Press Ctrl+C to stop.");
 
-    tokio::select! {
-        _ = spirc_task => {
-            Err("Spotify Connect stopped unexpectedly. Re-run with RIFF_LOG=debug riff player for details.".to_string())
-        },
-        result = tokio::signal::ctrl_c() => {
-            result.map_err(|err| format!("could not listen for Ctrl+C: {err}"))?;
-            session.shutdown();
-            Ok(())
+    tokio::pin!(spirc_task);
+    loop {
+        tokio::select! {
+            _ = &mut spirc_task => {
+                return Err("Spotify Connect stopped unexpectedly. Re-run with RIFF_LOG=debug riff player for details.".to_string());
+            },
+            event = player_events.recv(), if radio_last_uri.is_some() && !radio_pending => {
+                if let Some(PlayerEvent::EndOfTrack { track_id, .. }) = event {
+                    let seed_uri = track_id.to_string();
+                    if radio_last_uri.as_deref() == Some(seed_uri.as_str()) {
+                        radio_pending = true;
+                        spawn_radio_tracks(session.clone(), seed_uri, radio_tx.clone());
+                    }
+                }
+            },
+            Some((seed_uri, result)) = radio_rx.recv() => {
+                radio_pending = false;
+                if radio_last_uri.as_deref() == Some(seed_uri.as_str()) {
+                    let tracks = match result {
+                        Ok(tracks) => tracks.into_iter().filter(|uri| uri != &seed_uri).collect::<Vec<_>>(),
+                        Err(error) => {
+                            log::warn!("could not continue playback with Spotify radio: {error}");
+                            Vec::new()
+                        }
+                    };
+                    if let Some(last_uri) = tracks.last() {
+                        radio_last_uri = Some(last_uri.clone());
+                        if let Err(error) = spirc.load(LoadRequest::from_tracks(tracks, LoadRequestOptions::default())) {
+                            log::warn!("could not load Spotify radio: {error}");
+                            radio_last_uri = None;
+                        } else if let Err(error) = spirc.play() {
+                            log::warn!("could not play Spotify radio: {error}");
+                            radio_last_uri = None;
+                        }
+                    } else {
+                        radio_last_uri = None;
+                    }
+                }
+            },
+            result = tokio::signal::ctrl_c() => {
+                result.map_err(|err| format!("could not listen for Ctrl+C: {err}"))?;
+                session.shutdown();
+                return Ok(());
+            }
         }
     }
+}
+#[derive(Deserialize)]
+struct RadioStationResponse {
+    tracks: Vec<RadioStationTrack>,
+}
+
+#[derive(Deserialize)]
+struct RadioStationTrack {
+    original_gid: String,
+}
+fn parse_radio_track_uris(payload: &[u8]) -> Result<Vec<String>, String> {
+    let station: RadioStationResponse = serde_json::from_slice(payload)
+        .map_err(|err| format!("could not parse Spotify radio station: {err}"))?;
+    Ok(station
+        .tracks
+        .into_iter()
+        .filter_map(|track| {
+            let id = SpotifyId::from_base16(&track.original_gid).ok()?;
+            Some(format!("spotify:track:{}", id.to_base62().ok()?))
+        })
+        .collect())
+}
+
+pub async fn radio_tracks_with_session(
+    session: &Session,
+    seed_uri: &str,
+) -> Result<Vec<String>, String> {
+    if !is_spotify_track_uri(seed_uri) {
+        return Err(format!("invalid Spotify radio seed URI `{seed_uri}`"));
+    }
+    let response = session
+        .mercury()
+        .get(format!("hm://autoplay-enabled/query?uri={seed_uri}"))
+        .map_err(|err| format!("could not request Spotify autoplay URI: {err}"))?
+        .await
+        .map_err(|err| format!("could not retrieve Spotify autoplay URI: {err}"))?;
+    if response.status_code != 200 {
+        return Err(format!(
+            "Spotify autoplay request returned status {}",
+            response.status_code
+        ));
+    }
+    let autoplay_uri = response
+        .payload
+        .first()
+        .ok_or_else(|| "Spotify autoplay response was empty".to_string())?;
+    let autoplay_uri = String::from_utf8(autoplay_uri.clone())
+        .map_err(|err| format!("Spotify returned an invalid autoplay URI: {err}"))?;
+    let response = session
+        .mercury()
+        .get(format!("hm://radio-apollo/v3/stations/{autoplay_uri}"))
+        .map_err(|err| format!("could not request Spotify radio station: {err}"))?
+        .await
+        .map_err(|err| format!("could not retrieve Spotify radio station: {err}"))?;
+    if response.status_code != 200 {
+        return Err(format!(
+            "Spotify radio station returned status {}",
+            response.status_code
+        ));
+    }
+    let payload = response
+        .payload
+        .first()
+        .ok_or_else(|| "Spotify radio station response was empty".to_string())?;
+    parse_radio_track_uris(payload)
+}
+
+fn spawn_radio_tracks(
+    session: Session,
+    seed_uri: String,
+    updates: mpsc::UnboundedSender<(String, Result<Vec<String>, String>)>,
+) {
+    tokio::spawn(async move {
+        let result = radio_tracks_with_session(&session, &seed_uri).await;
+        let _ = updates.send((seed_uri, result));
+    });
 }
 
 pub async fn search(query: &str, limit: usize) -> Result<Vec<SearchCandidate>, String> {
@@ -161,6 +293,13 @@ pub async fn search_advanced(
     let result = smart_search_with_session(&session, query, limit, exact, threshold).await;
     session.shutdown();
     result
+}
+pub async fn search_tracks_with_session(
+    session: &Session,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchCandidate>, String> {
+    search_with_session(session, query, limit).await
 }
 
 pub async fn inspect_track(uri: &str) -> Result<SearchCandidate, String> {
@@ -272,7 +411,7 @@ async fn discovery_session() -> Result<Session, String> {
     let (session_config, cache, credentials) = session_parts()?;
     let session = Session::new(session_config, Some(cache));
     session
-        .connect(credentials, false)
+        .connect(credentials, true)
         .await
         .map_err(|err| format!("could not connect to Spotify: {err}"))?;
     Ok(session)
@@ -375,6 +514,16 @@ async fn enrich_candidate(
     metadata.insert("album".into(), track.album.name.clone());
     metadata.insert("album_year".into(), track.album.date.year().to_string());
     metadata.insert("duration".into(), format_duration(track.duration));
+    metadata.insert("duration_ms".into(), track.duration.max(0).to_string());
+    if let Some(cover_id) = track
+        .album
+        .covers
+        .iter()
+        .max_by_key(|cover| cover.width.saturating_mul(cover.height))
+        .map(|cover| cover.id.to_string())
+    {
+        metadata.insert("cover_id".into(), cover_id);
+    }
     metadata.insert("popularity".into(), track.popularity.to_string());
 
     if !track.version_title.trim().is_empty() {
@@ -481,6 +630,15 @@ fn oauth_credentials(session_config: &SessionConfig) -> Result<Credentials, Stri
 mod tests {
     use super::*;
 
+    #[test]
+    fn radio_station_base16_ids_become_track_uris_and_invalid_ids_are_skipped() {
+        let tracks = parse_radio_track_uris(
+            br#"{"tracks":[{"original_gid":"00000000000000000000000000000001"},{"original_gid":"bad"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(tracks, ["spotify:track:0000000000000000000001"]);
+    }
     #[test]
     fn default_device_name_is_riff() {
         assert_eq!(PlayerOptions::default().device_name, "Riff");

@@ -7,7 +7,10 @@ mod theme;
 
 use std::{
     collections::HashMap,
-    fs, io,
+    fs,
+    future::Future,
+    io,
+    io::Write,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -25,11 +28,11 @@ use crossterm::{
 use image::DynamicImage;
 use ratatui::{
     Frame, Terminal,
-    backend::CrosstermBackend,
+    backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout, Rect, Size},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, Gauge, LineGauge, List, ListItem, Padding, Paragraph, Wrap},
 };
 use ratatui_image::{Image as TerminalImage, Resize, picker::Picker, protocol::Protocol};
 use riff::Playlist;
@@ -63,6 +66,10 @@ struct Workbench {
     artwork_pending: HashMap<String, bool>,
     pending_volume: Option<u16>,
     last_volume_send: Instant,
+    command: Option<String>,
+    command_suggestion: usize,
+    command_error: Option<String>,
+    visualizer: [u8; 32],
 }
 
 #[derive(Debug, Default)]
@@ -135,13 +142,6 @@ impl Drop for TerminalGuard {
     }
 }
 
-const STARTUP_FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
-const STARTUP_FRAME_INTERVAL: Duration = Duration::from_millis(90);
-
-fn startup_frame(index: usize) -> &'static str {
-    STARTUP_FRAMES[index % STARTUP_FRAMES.len()]
-}
-
 pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     if playlist.tracks.is_empty() {
         return Err("playlist has no tracks to play".to_string());
@@ -153,6 +153,7 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| file_path.display().to_string());
     let theme = Theme::from_env();
+    player_task::prepare_authentication().await?;
 
     let mut terminal_guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -162,10 +163,15 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         .clear()
         .map_err(|error| format!("could not clear terminal: {error}"))?;
 
-    let queue = resolve_queue_with_startup(&mut terminal, &playlist, theme).await?;
-    terminal
-        .draw(|frame| draw_startup_ready(frame, &playlist.name, theme, queue.len()))
-        .map_err(|error| format!("could not render startup completion: {error}"))?;
+    let queue = resolve_queue_with_startup(
+        &mut terminal,
+        &playlist.name,
+        theme,
+        player_task::resolve_queue(&playlist),
+        poll_startup_cancel,
+    )
+    .await?;
+    let auto_radio = playlist.radio || playlist.tracks.len() == 1;
 
     let state = AppState {
         file_path: file_path.clone(),
@@ -191,7 +197,9 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     let (control_tx, control_rx) = mpsc::unbounded_channel();
     let (update_tx, update_rx) = mpsc::unbounded_channel();
     let player_task = tokio::spawn(async move {
-        if let Err(error) = player_task::run_player(queue, control_rx, update_tx.clone()).await {
+        if let Err(error) =
+            player_task::run_player(queue, auto_radio, control_rx, update_tx.clone()).await
+        {
             let _ = update_tx.send(PlayerUpdate::Error(error));
         }
     });
@@ -203,6 +211,11 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
         artwork_pending: HashMap::new(),
         pending_volume: None,
         last_volume_send: Instant::now() - VOLUME_SEND_INTERVAL,
+        command: None,
+        command_suggestion: 0,
+        command_error: None,
+
+        visualizer: [0; 32],
     };
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
     let ui_result = run_terminal_loop(
@@ -222,50 +235,67 @@ pub async fn run(file_path: PathBuf, playlist: Playlist) -> Result<(), String> {
     ui_result.and(restore)
 }
 
-async fn resolve_queue_with_startup(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    playlist: &Playlist,
+async fn resolve_queue_with_startup<B, F, C>(
+    terminal: &mut Terminal<B>,
+    playlist_name: &str,
     theme: Theme,
-) -> Result<Vec<QueueItem>, String> {
-    let mut resolver = Box::pin(player_task::resolve_queue(playlist));
-    let mut frame_index = 0usize;
-
+    resolver: F,
+    mut poll_cancel: C,
+) -> Result<Vec<QueueItem>, String>
+where
+    B: Backend,
+    F: Future<Output = Result<Vec<QueueItem>, String>>,
+    C: FnMut() -> Result<bool, String>,
+{
+    let mut resolver = Box::pin(resolver);
+    let mut startup_drawn = false;
     loop {
-        terminal
-            .draw(|frame| draw_startup(frame, &playlist.name, theme, frame_index))
-            .map_err(|error| format!("could not render startup state: {error}"))?;
-
         tokio::select! {
             result = &mut resolver => {
                 return match result {
                     Ok(queue) => Ok(queue),
                     Err(error) => {
                         terminal
-                            .draw(|frame| draw_startup_error(frame, &playlist.name, theme, &error))
+                            .draw(|frame| draw_startup_error(frame, playlist_name, theme, &error))
                             .map_err(|draw_error| format!("{error}; could not render startup error: {draw_error}"))?;
                         wait_for_startup_ack()?;
                         Err(error)
                     }
                 };
             }
-            _ = tokio::time::sleep(STARTUP_FRAME_INTERVAL) => {
-                frame_index = frame_index.wrapping_add(1);
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                if !startup_drawn {
+                    terminal
+                        .draw(|frame| draw_startup(frame, playlist_name, theme))
+                        .map_err(|error| format!("could not render startup state: {error}"))?;
+                    startup_drawn = true;
+                }
             }
         }
 
-        if event::poll(Duration::ZERO)
-            .map_err(|error| format!("could not poll startup input: {error}"))?
-        {
-            match event::read().map_err(|error| format!("could not read startup input: {error}"))? {
-                Event::Key(key)
-                    if key.kind == KeyEventKind::Press
-                        && matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) =>
-                {
-                    return Err("Workbench startup cancelled".to_string());
-                }
-                _ => {}
-            }
+        if !startup_drawn {
+            continue;
         }
+        if startup_drawn && poll_cancel()? {
+            return Err("Workbench startup cancelled".to_string());
+        }
+    }
+}
+
+fn poll_startup_cancel() -> Result<bool, String> {
+    if !event::poll(Duration::ZERO)
+        .map_err(|error| format!("could not poll startup input: {error}"))?
+    {
+        return Ok(false);
+    }
+    match event::read().map_err(|error| format!("could not read startup input: {error}"))? {
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) =>
+        {
+            Ok(true)
+        }
+        _ => Ok(false),
     }
 }
 
@@ -282,31 +312,14 @@ fn wait_for_startup_ack() -> Result<(), String> {
     }
 }
 
-fn draw_startup(frame: &mut Frame<'_>, playlist_name: &str, theme: Theme, index: usize) {
+fn draw_startup(frame: &mut Frame<'_>, playlist_name: &str, theme: Theme) {
     draw_startup_panel(
         frame,
         theme,
-        format!("{}  Starting Riff Workbench", startup_frame(index)),
+        "Preparing playlist",
         playlist_name,
-        "Spotify session · resolving tracks · loading metadata",
+        "Loading track metadata",
         "q / Esc cancels",
-        false,
-    );
-}
-
-fn draw_startup_ready(
-    frame: &mut Frame<'_>,
-    playlist_name: &str,
-    theme: Theme,
-    track_count: usize,
-) {
-    draw_startup_panel(
-        frame,
-        theme,
-        "✓  Playlist ready".to_string(),
-        playlist_name,
-        &format!("{track_count} tracks resolved · starting player"),
-        "",
         false,
     );
 }
@@ -315,7 +328,7 @@ fn draw_startup_error(frame: &mut Frame<'_>, playlist_name: &str, theme: Theme, 
     draw_startup_panel(
         frame,
         theme,
-        "Startup failed".to_string(),
+        "Startup failed",
         playlist_name,
         error,
         "Press any key to return to the terminal",
@@ -326,7 +339,7 @@ fn draw_startup_error(frame: &mut Frame<'_>, playlist_name: &str, theme: Theme, 
 fn draw_startup_panel(
     frame: &mut Frame<'_>,
     theme: Theme,
-    title: String,
+    title: &str,
     playlist_name: &str,
     detail: &str,
     hint: &str,
@@ -338,55 +351,54 @@ fn draw_startup_panel(
         area,
     );
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Length(9),
-            Constraint::Min(0),
-        ])
-        .split(area);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(10),
-            Constraint::Percentage(80),
-            Constraint::Percentage(10),
-        ])
-        .split(rows[1]);
-
+    let width = area.width.min(64);
+    let height = area.height.min(9);
+    let panel = Rect::new(
+        (area.width - width) / 2,
+        (area.height - height) / 2,
+        width,
+        height,
+    );
     let title_color = if danger { theme.danger } else { theme.accent };
-    let lines = vec![
-        Line::from(Span::styled(
-            "RIFF",
+    let block = Block::default()
+        .title(" RIFF ")
+        .title_style(
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
+        )
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .style(Style::default().bg(theme.background).fg(theme.foreground))
+        .padding(Padding::uniform(1));
+    let inner = block.inner(panel);
+    let mut lines = vec![
         Line::from(Span::styled(
             title,
             Style::default()
                 .fg(title_color)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(playlist_name.to_string()),
         Line::from(Span::styled(
-            detail.to_string(),
-            Style::default().fg(theme.muted),
+            playlist_name,
+            Style::default().fg(theme.foreground),
         )),
-        Line::from(""),
-        Line::from(Span::styled(
-            hint.to_string(),
-            Style::default().fg(theme.muted),
-        )),
+        Line::from(Span::styled(detail, Style::default().fg(theme.muted))),
     ];
+    if !hint.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            hint,
+            Style::default().fg(theme.muted),
+        )));
+    }
 
+    frame.render_widget(block, panel);
     frame.render_widget(
         Paragraph::new(lines)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true }),
-        columns[1],
+        inner,
     );
 }
 
@@ -414,7 +426,7 @@ async fn run_terminal_loop(
             .draw(|frame| draw(frame, workbench))
             .map_err(|error| format!("could not render Riff Workbench: {error}"))?;
 
-        if event::poll(Duration::from_millis(40))
+        if event::poll(Duration::from_millis(16))
             .map_err(|error| format!("could not poll terminal input: {error}"))?
         {
             match event::read()
@@ -429,8 +441,6 @@ async fn run_terminal_loop(
                 _ => {}
             }
         }
-
-        tokio::time::sleep(Duration::from_millis(16)).await;
     }
     Ok(())
 }
@@ -464,6 +474,7 @@ fn apply_player_update(
             workbench.state.current_uri = Some(uri);
             workbench.state.position_ms = position_ms;
         }
+        PlayerUpdate::Visualizer(levels) => workbench.visualizer = levels,
         PlayerUpdate::Volume(volume) => workbench.state.volume = volume,
         PlayerUpdate::Shuffle(shuffle) => workbench.state.shuffle = shuffle,
         PlayerUpdate::Repeat(repeat) => workbench.state.repeat = repeat,
@@ -583,16 +594,151 @@ fn handle_key(
     key: KeyEvent,
     controls: &mpsc::UnboundedSender<Control>,
 ) -> Result<bool, String> {
+    if workbench.command.is_some() {
+        return handle_command_key(workbench, key, controls);
+    }
+    if workbench.state.view != View::Editor
+        && key.code == KeyCode::Char(':')
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+    {
+        workbench.command = Some(String::new());
+        workbench.command_error = None;
+        workbench.command_suggestion = 0;
+        return Ok(false);
+    }
     if workbench.state.view == View::Editor {
         return handle_editor_key(workbench, key, controls);
     }
     if workbench.state.view == View::Search {
         return handle_search_key(workbench, key, controls);
     }
+    if workbench.state.view == View::Lyrics {
+        return handle_lyrics_key(workbench, key, controls);
+    }
 
     Ok(action_for_key(key)
         .map(|action| apply_action(workbench, action, controls))
         .unwrap_or(false))
+}
+fn handle_command_key(
+    workbench: &mut Workbench,
+    key: KeyEvent,
+    controls: &mpsc::UnboundedSender<Control>,
+) -> Result<bool, String> {
+    match key.code {
+        KeyCode::Esc => {
+            workbench.command = None;
+            workbench.command_error = None;
+        }
+        KeyCode::Enter => {
+            let input = workbench.command.take().unwrap_or_default();
+            let suggestions = command_suggestions(&input);
+            let command = if input.trim().is_empty() && workbench.command_suggestion == 0 {
+                String::new()
+            } else if let Some(suggestion) = suggestions.get(workbench.command_suggestion) {
+                (*suggestion).to_string()
+            } else {
+                input.trim().to_ascii_lowercase()
+            };
+            workbench.command_error = None;
+            match command.as_str() {
+                "" => {}
+                "q" | "quit" => return Ok(apply_action(workbench, Action::Quit, controls)),
+                name => match view_for_command(name) {
+                    Some(view) => {
+                        apply_action(workbench, Action::SetView(view), controls);
+                    }
+                    None => {
+                        workbench.command_error = Some(format!("unknown command: {name}"));
+                    }
+                },
+            }
+        }
+        KeyCode::Up | KeyCode::Down => {
+            let suggestions = command_suggestions(workbench.command.as_deref().unwrap_or_default());
+            if !suggestions.is_empty() {
+                workbench.command_suggestion = match key.code {
+                    KeyCode::Up => workbench
+                        .command_suggestion
+                        .checked_sub(1)
+                        .unwrap_or(suggestions.len() - 1),
+                    _ => (workbench.command_suggestion + 1) % suggestions.len(),
+                };
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(command) = &mut workbench.command {
+                command.pop();
+            }
+            workbench.command_suggestion = 0;
+            workbench.command_error = None;
+        }
+        KeyCode::Char(ch)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            if let Some(command) = &mut workbench.command {
+                command.push(ch);
+            }
+            workbench.command_suggestion = 0;
+            workbench.command_error = None;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn command_suggestions(query: &str) -> Vec<&'static str> {
+    ["now", "search", "playlist", "lyrics", "editor", "quit"]
+        .into_iter()
+        .filter(|command| command.starts_with(&query.trim().to_ascii_lowercase()))
+        .collect()
+}
+
+fn view_for_command(command: &str) -> Option<View> {
+    match command {
+        "now" | "nowplaying" | "now-playing" => Some(View::NowPlaying),
+        "search" => Some(View::Search),
+        "playlist" | "queue" => Some(View::Playlist),
+        "lyrics" => Some(View::Lyrics),
+        "editor" => Some(View::Editor),
+        _ => None,
+    }
+}
+
+fn handle_lyrics_key(
+    workbench: &mut Workbench,
+    key: KeyEvent,
+    controls: &mpsc::UnboundedSender<Control>,
+) -> Result<bool, String> {
+    let position_ms = workbench.state.position_ms;
+    let page = workbench.state.lyrics.visible_rows.max(1) as isize;
+    match key.code {
+        KeyCode::Esc => workbench.state.view = View::NowPlaying,
+        KeyCode::Up => workbench.state.lyrics.scroll_by(-1, position_ms),
+        KeyCode::Down => workbench.state.lyrics.scroll_by(1, position_ms),
+        KeyCode::PageUp => workbench.state.lyrics.scroll_by(-page, position_ms),
+        KeyCode::PageDown => workbench.state.lyrics.scroll_by(page, position_ms),
+        KeyCode::Home => workbench.state.lyrics.scroll = Some(0),
+        KeyCode::End => {
+            workbench.state.lyrics.scroll = Some(
+                workbench
+                    .state
+                    .lyrics
+                    .lines
+                    .len()
+                    .saturating_sub(workbench.state.lyrics.visible_rows),
+            );
+        }
+        KeyCode::Char('f') => workbench.state.lyrics.scroll = None,
+        _ => {
+            return Ok(
+                action_for_key(key).is_some_and(|action| apply_action(workbench, action, controls))
+            );
+        }
+    }
+    Ok(false)
 }
 
 fn handle_search_key(
@@ -610,6 +756,15 @@ fn handle_search_key(
             }
             _ => {}
         }
+        return Ok(false);
+    }
+
+    if key.modifiers.is_empty() && key.code == KeyCode::Char('y') {
+        copy_selected_search(workbench, false)?;
+        return Ok(false);
+    }
+    if key.modifiers.is_empty() && key.code == KeyCode::Char('Y') {
+        copy_selected_search(workbench, true)?;
         return Ok(false);
     }
 
@@ -724,6 +879,36 @@ fn play_selected_search(workbench: &mut Workbench, controls: &mpsc::UnboundedSen
     }
 }
 
+fn copy_selected_search(workbench: &mut Workbench, copy_name: bool) -> Result<(), String> {
+    let Some(item) = workbench.state.search.selected() else {
+        return Ok(());
+    };
+    let value = if copy_name {
+        item.label()
+    } else {
+        item.uri.clone()
+    };
+    io::stdout()
+        .write_all(clipboard_osc52(&value).as_bytes())
+        .and_then(|()| io::stdout().flush())
+        .map_err(|error| format!("could not copy Search result: {error}"))?;
+    workbench.state.message = if copy_name {
+        "copied track name to terminal clipboard".into()
+    } else {
+        "copied track ID to terminal clipboard".into()
+    };
+    Ok(())
+}
+
+fn clipboard_osc52(value: &str) -> String {
+    use base64::Engine;
+
+    format!(
+        "\\x1b]52;c;{}\\x07",
+        base64::engine::general_purpose::STANDARD.encode(value)
+    )
+}
+
 fn append_selected_to_playlist(workbench: &mut Workbench) -> Result<(), String> {
     if workbench.editor.dirty {
         workbench.state.message =
@@ -831,16 +1016,6 @@ fn handle_mouse(
     let point = (mouse.column, mouse.row);
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            if let Some((view, _)) = workbench
-                .state
-                .hits
-                .tabs
-                .iter()
-                .find(|(_, rect)| contains(*rect, point))
-            {
-                workbench.state.view = *view;
-                return Ok(());
-            }
             if workbench
                 .state
                 .hits
@@ -909,6 +1084,17 @@ fn handle_mouse(
                 .is_some_and(|rect| contains(rect, point))
             {
                 adjust_volume(workbench, VOLUME_STEP_PERCENT, controls);
+            } else if workbench.state.view == View::Lyrics
+                && workbench
+                    .state
+                    .hits
+                    .lyrics
+                    .is_some_and(|rect| contains(rect, point))
+            {
+                workbench
+                    .state
+                    .lyrics
+                    .scroll_by(-1, workbench.state.position_ms);
             }
         }
         MouseEventKind::ScrollDown => {
@@ -922,6 +1108,17 @@ fn handle_mouse(
                 .is_some_and(|rect| contains(rect, point))
             {
                 adjust_volume(workbench, -VOLUME_STEP_PERCENT, controls);
+            } else if workbench.state.view == View::Lyrics
+                && workbench
+                    .state
+                    .hits
+                    .lyrics
+                    .is_some_and(|rect| contains(rect, point))
+            {
+                workbench
+                    .state
+                    .lyrics
+                    .scroll_by(1, workbench.state.position_ms);
             }
         }
         _ => {}
@@ -990,83 +1187,23 @@ fn draw(frame: &mut Frame<'_>, workbench: &mut Workbench) {
     workbench.state.hits = HitMap::default();
 
     let outer = Layout::default()
-        .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(2),
             Constraint::Min(10),
             Constraint::Length(4),
             Constraint::Length(1),
         ])
         .split(frame.area());
 
-    draw_header(frame, outer[0], workbench);
-    draw_tabs(frame, outer[1], workbench);
     match workbench.state.view {
-        View::NowPlaying => draw_now_playing(frame, outer[2], workbench),
-        View::Search => draw_search(frame, outer[2], workbench),
-        View::Playlist => draw_playlist(frame, outer[2], workbench),
-        View::Lyrics => draw_lyrics(frame, outer[2], workbench),
-        View::Editor => draw_editor(frame, outer[2], workbench),
+        View::NowPlaying => draw_now_playing(frame, outer[0], workbench),
+        View::Search => draw_search(frame, outer[0], workbench),
+        View::Playlist => draw_playlist(frame, outer[0], workbench),
+        View::Lyrics => draw_lyrics(frame, outer[0], workbench),
+        View::Editor => draw_editor(frame, outer[0], workbench),
     }
-    draw_transport(frame, outer[3], workbench);
-    draw_status(frame, outer[4], workbench);
-}
-
-fn draw_header(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
-    let theme = workbench.state.theme;
-    let mut spans = vec![
-        Span::styled(
-            " RIFF ",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            &workbench.state.file_name,
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if let Some(git) = &workbench.state.git {
-        spans.push(Span::raw("   "));
-        spans.push(Span::styled(
-            format!(" {}{}", git.branch, if git.dirty { " *" } else { "" }),
-            Style::default().fg(theme.accent),
-        ));
-    }
-    spans.push(Span::raw("   "));
-    spans.push(Span::styled(
-        format!("theme:{}", theme.name),
-        Style::default().fg(theme.muted),
-    ));
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn draw_tabs(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
-    let theme = workbench.state.theme;
-    let constraints = View::ALL.map(|_| Constraint::Ratio(1, View::ALL.len() as u32));
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(constraints)
-        .split(area);
-    for (index, view) in View::ALL.iter().copied().enumerate() {
-        let selected = view == workbench.state.view;
-        let style = if selected {
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else {
-            Style::default().fg(theme.muted)
-        };
-        frame.render_widget(
-            Paragraph::new(view.title())
-                .alignment(Alignment::Center)
-                .style(style),
-            columns[index],
-        );
-        workbench.state.hits.tabs.push((view, columns[index]));
-    }
+    draw_transport(frame, outer[1], workbench);
+    draw_status(frame, outer[2], workbench);
+    draw_command_popup(frame, frame.area(), workbench);
 }
 
 fn draw_now_playing(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
@@ -1083,7 +1220,7 @@ fn draw_now_playing(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
             current_art_key(workbench),
         );
         draw_metadata(frame, columns[1], workbench);
-    } else if area.height >= 20 {
+    } else if area.height >= 27 {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(11), Constraint::Min(7)])
@@ -1114,6 +1251,12 @@ fn draw_art(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(theme.background))
         .title(" album ")
         .padding(Padding::uniform(1));
     let inner = block.inner(area);
@@ -1135,7 +1278,19 @@ fn draw_art(
     } else {
         &artwork.wide
     };
-    frame.render_widget(TerminalImage::new(protocol).allow_clipping(true), inner);
+    let image_width = protocol.size().width.min(inner.width);
+    let image_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(image_width),
+            Constraint::Min(0),
+        ])
+        .split(inner)[1];
+    frame.render_widget(
+        TerminalImage::new(protocol).allow_clipping(true),
+        image_area,
+    );
 }
 
 fn draw_metadata(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
@@ -1143,6 +1298,12 @@ fn draw_metadata(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(theme.background))
         .title(" now playing ")
         .padding(Padding::new(2, 2, 1, 1));
     let inner = block.inner(area);
@@ -1154,6 +1315,11 @@ fn draw_metadata(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     else {
         return;
     };
+    let status_color = if workbench.state.status == PlaybackStatus::Playing {
+        theme.playing
+    } else {
+        theme.accent
+    };
     let mut lines = vec![
         Line::from(Span::styled(
             format!(
@@ -1162,7 +1328,7 @@ fn draw_metadata(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
                 workbench.state.status.label().to_uppercase()
             ),
             Style::default()
-                .fg(theme.accent)
+                .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -1184,7 +1350,86 @@ fn draw_metadata(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
         &current.uri,
         Style::default().fg(theme.muted),
     )));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    let visualizer_height = inner.height.saturating_sub(lines.len() as u16).min(5);
+    let panels = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(visualizer_height)])
+        .split(inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), panels[0]);
+    frame.render_widget(
+        Paragraph::new(visualizer_lines(
+            &workbench.visualizer,
+            panels[1].width,
+            panels[1].height,
+            theme.accent,
+        )),
+        panels[1],
+    );
+}
+
+fn visualizer_lines(
+    levels: &[u8; 32],
+    width: u16,
+    height: u16,
+    color: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    let bar_count = width.saturating_add(1) as usize / 2;
+    (0..height)
+        .map(|row| {
+            let threshold = u32::from(height - row) * u32::from(u8::MAX);
+            let mut bars = String::with_capacity(width as usize);
+            for index in 0..bar_count {
+                let level = levels[index * levels.len() / bar_count];
+                let symbol = if u32::from(level) * u32::from(height) >= threshold {
+                    '█'
+                } else if row + 1 == height {
+                    '▁'
+                } else {
+                    ' '
+                };
+                bars.push(symbol);
+                if index + 1 < bar_count {
+                    bars.push(' ');
+                }
+            }
+            Line::from(Span::styled(bars, Style::default().fg(color)))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod visualizer_tests {
+    use super::*;
+
+    #[test]
+    fn draws_full_height_bars_across_the_visualizer_width_without_background() {
+        let lines = visualizer_lines(&[u8::MAX; 32], 100, 4, ratatui::style::Color::Green);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 4)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new(lines), frame.area()))
+            .unwrap();
+
+        for row in 0..4 {
+            let buffer = terminal.backend().buffer();
+            let filled = (0..100)
+                .filter(|x| buffer.cell((*x, row)).unwrap().symbol() == "█")
+                .count();
+            assert_eq!(filled, 50);
+            assert_eq!(
+                buffer.cell((0, row)).unwrap().bg,
+                ratatui::style::Color::Reset
+            );
+        }
+        let lines = visualizer_lines(&[0; 32], 100, 1, ratatui::style::Color::Green);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 1)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new(lines), frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "▁");
+        assert_eq!(buffer.cell((1, 0)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((2, 0)).unwrap().symbol(), "▁");
+    }
 }
 
 fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
@@ -1197,6 +1442,12 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
+            .title_style(
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .style(Style::default().bg(theme.background))
             .title(" smart search "),
     );
     frame.render_widget(prompt, rows[0]);
@@ -1227,7 +1478,7 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
         .split(rows[1]);
     workbench.state.hits.search_rows.clear();
-    let visible_height = columns[0].height.saturating_sub(2) as usize;
+    let visible_height = columns[0].height.saturating_sub(2) as usize / 2;
     let selected = workbench.state.search.selected;
     let start = selected.saturating_sub(visible_height / 2);
     let items = workbench
@@ -1255,7 +1506,7 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
             let style = if index == selected {
                 Style::default()
                     .bg(theme.selection)
-                    .fg(theme.foreground)
+                    .fg(theme.highlight)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -1266,6 +1517,12 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let list_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(theme.background))
         .title(format!(
             " results · {} ",
             workbench.state.search.results.len()
@@ -1294,6 +1551,12 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
         let art_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
+            .title_style(
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .style(Style::default().bg(theme.background))
             .title(" selected ")
             .padding(Padding::uniform(1));
         let inner = art_block.inner(right[0]);
@@ -1364,7 +1627,8 @@ fn draw_playlist(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
             );
             let style = if Some(index) == current {
                 Style::default()
-                    .fg(theme.accent)
+                    .fg(theme.highlight)
+                    .bg(theme.selection)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -1382,6 +1646,12 @@ fn draw_playlist(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border))
+                .title_style(
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .style(Style::default().bg(theme.background))
                 .title(format!(
                     " {} · {} tracks{} · generated by code or TUI ",
                     workbench.state.playlist_name,
@@ -1393,11 +1663,17 @@ fn draw_playlist(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     );
 }
 
-fn draw_lyrics(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
+fn draw_lyrics(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(theme.background))
         .title(format!(
             " lyrics{} ",
             workbench
@@ -1409,6 +1685,8 @@ fn draw_lyrics(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
                 .unwrap_or_default()
         ));
     let inner = block.inner(area);
+    workbench.state.hits.lyrics = Some(inner);
+    workbench.state.lyrics.visible_rows = inner.height as usize;
     frame.render_widget(block, area);
     if workbench.state.lyrics.loading {
         frame.render_widget(
@@ -1434,30 +1712,26 @@ fn draw_lyrics(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
         );
         return;
     }
-    let active = workbench
+    let position_ms = workbench.state.position_ms;
+    let active = workbench.state.lyrics.active_line(position_ms).unwrap_or(0);
+    let start = workbench.state.lyrics.scroll_offset(position_ms);
+    let lines = workbench
         .state
         .lyrics
-        .active_line(workbench.state.position_ms)
-        .unwrap_or(0);
-    let radius = (inner.height as usize / 2).max(2);
-    let start = active.saturating_sub(radius);
-    let end = (active + radius + 1).min(workbench.state.lyrics.lines.len());
-    let lines = workbench.state.lyrics.lines[start..end]
+        .lines
         .iter()
         .enumerate()
-        .flat_map(|(offset, line)| {
-            let index = start + offset;
+        .skip(start)
+        .take(inner.height as usize)
+        .map(|(index, line)| {
             let style = if index == active {
                 Style::default()
-                    .fg(theme.accent)
+                    .fg(theme.playing)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.muted)
             };
-            [
-                Line::from(Span::styled(line.text.clone(), style)).alignment(Alignment::Center),
-                Line::from(""),
-            ]
+            Line::from(Span::styled(line.text.as_str(), style)).alignment(Alignment::Center)
         })
         .collect::<Vec<_>>();
     frame.render_widget(
@@ -1478,6 +1752,12 @@ fn draw_editor(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(theme.background))
         .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1567,8 +1847,7 @@ fn transport_mode(width: u16) -> TransportMode {
 
 fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) {
     let theme = workbench.state.theme;
-    let mode = transport_mode(area.width);
-    let compact = mode == TransportMode::Compact;
+    let compact = transport_mode(area.width) == TransportMode::Compact;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Length(2)])
@@ -1594,25 +1873,25 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
         .direction(Direction::Horizontal)
         .constraints(constraints)
         .split(rows[0]);
-    let previous_label = if compact { " ◀ " } else { " ◀ prev " };
-    let toggle_label = match (compact, workbench.state.status == PlaybackStatus::Playing) {
-        (true, true) => " Ⅱ ",
-        (true, false) => " ▶ ",
-        (false, true) => " Ⅱ pause ",
-        (false, false) => " ▶ play ",
-    };
-    let next_label = if compact { " ▶ " } else { " next ▶ " };
-    let previous = Paragraph::new(previous_label)
+    let previous = Paragraph::new("|◀")
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.accent));
-    let toggle = Paragraph::new(toggle_label)
-        .alignment(Alignment::Center)
-        .style(
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        );
-    let next = Paragraph::new(next_label)
+    let toggle = Paragraph::new(if workbench.state.status == PlaybackStatus::Playing {
+        "Ⅱ"
+    } else {
+        "▶"
+    })
+    .alignment(Alignment::Center)
+    .style(
+        Style::default()
+            .fg(if workbench.state.status == PlaybackStatus::Playing {
+                theme.playing
+            } else {
+                theme.accent
+            })
+            .add_modifier(Modifier::BOLD),
+    );
+    let next = Paragraph::new("▶|")
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.accent));
     frame.render_widget(previous, top[0]);
@@ -1645,7 +1924,11 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
         format!("vol {volume_percent:>3}%")
     };
     frame.render_widget(
-        Gauge::default().ratio(volume_ratio).label(volume_label),
+        Gauge::default()
+            .ratio(volume_ratio)
+            .label(volume_label)
+            .style(Style::default().fg(theme.muted).bg(theme.background))
+            .gauge_style(Style::default().fg(theme.accent).bg(theme.background)),
         top[4],
     );
     workbench.state.hits.volume = Some(top[4]);
@@ -1657,14 +1940,20 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
         (workbench.state.position_ms as f64 / duration as f64).clamp(0.0, 1.0)
     };
     frame.render_widget(
-        Gauge::default()
-            .block(Block::default().borders(Borders::TOP))
+        LineGauge::default()
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(theme.border))
+                    .style(Style::default().bg(theme.background)),
+            )
             .ratio(ratio)
-            .label(format!(
-                "{} / {}",
-                format_duration(workbench.state.position_ms),
-                format_duration(duration)
-            )),
+            .filled_symbol("━")
+            .unfilled_symbol("┄")
+            .filled_style(Style::default().fg(theme.accent))
+            .unfilled_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.background))
+            .label(""),
         rows[1],
     );
     workbench.state.hits.progress = Some(rows[1]);
@@ -1672,20 +1961,113 @@ fn draw_transport(frame: &mut Frame<'_>, area: Rect, workbench: &mut Workbench) 
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
     let theme = workbench.state.theme;
-    let hint = match workbench.state.view {
-        View::Search => {
-            " Enter search/play · ↑↓ select · Ctrl+A add · Ctrl+P play · Esc back ".to_string()
-        }
-        View::Editor => {
-            " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ".to_string()
-        }
-        _ => global_status_hint(area.width < COMPACT_TRANSPORT_WIDTH),
+    let (text, style, alignment) = if let Some(error) = &workbench.command_error {
+        (
+            format!("{error} · press : to retry"),
+            Style::default().fg(theme.danger),
+            Alignment::Left,
+        )
+    } else {
+        let hint = match workbench.state.view {
+            View::Search => {
+                " Enter search/play · ↑↓ select · Ctrl+A add · Ctrl+P play · y ID · Y name · : commands "
+                    .to_string()
+            }
+            View::Lyrics => " ↑↓/PgUp/PgDn scroll · f follow playback · : commands ".to_string(),
+            View::Editor => {
+                " Ctrl+S save · Ctrl+K/U cut/paste · Ctrl+G help · Ctrl+X leave ".to_string()
+            }
+            _ => global_status_hint(area.width < COMPACT_TRANSPORT_WIDTH),
+        };
+        (hint, Style::default().fg(theme.muted), Alignment::Center)
+    };
+    frame.render_widget(Paragraph::new(text).alignment(alignment).style(style), area);
+}
+
+fn draw_command_popup(frame: &mut Frame<'_>, area: Rect, workbench: &Workbench) {
+    let Some(command) = &workbench.command else {
+        return;
+    };
+    let theme = workbench.state.theme;
+    let suggestions = command_suggestions(command);
+    let rows = suggestions.len().clamp(1, 8) as u16;
+    let popup_height = (3 + rows).min(area.height);
+    let popup_width = area.width.min(56);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(popup_width) / 2,
+        y: area.y + area.height.saturating_sub(popup_height) / 2,
+        width: popup_width,
+        height: popup_height,
+    };
+    let input = Rect {
+        height: popup.height.min(3),
+        ..popup
+    };
+    let line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(theme.playing)),
+        Span::raw(command.as_str()),
+        Span::styled("█", Style::default().fg(theme.playing)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.playing))
+                .title(" Cmdline ")
+                .title_alignment(Alignment::Center)
+                .style(Style::default().bg(theme.background)),
+        ),
+        input,
+    );
+
+    let list = Rect {
+        y: popup.y.saturating_add(input.height),
+        height: popup.height.saturating_sub(input.height),
+        ..popup
+    };
+    if list.height == 0 {
+        return;
+    }
+    let rows = if suggestions.is_empty() {
+        vec![Line::from("  No matching command")]
+    } else {
+        suggestions
+            .iter()
+            .take(list.height as usize)
+            .enumerate()
+            .map(|(index, suggestion)| {
+                let selected = index == workbench.command_suggestion;
+                Line::from(vec![
+                    Span::styled(
+                        if selected { "› " } else { "  " },
+                        Style::default().fg(theme.playing),
+                    ),
+                    Span::styled(
+                        *suggestion,
+                        Style::default()
+                            .fg(if selected {
+                                theme.foreground
+                            } else {
+                                theme.muted
+                            })
+                            .bg(if selected {
+                                theme.selection
+                            } else {
+                                theme.background
+                            })
+                            .add_modifier(if selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                ])
+            })
+            .collect()
     };
     frame.render_widget(
-        Paragraph::new(hint)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(theme.muted)),
-        area,
+        Paragraph::new(rows).style(Style::default().bg(theme.background)),
+        list,
     );
 }
 
@@ -1697,6 +2079,303 @@ fn format_duration(duration_ms: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_prompt_renders_without_starting_playback() {
+        let theme = Theme::named("riff").unwrap();
+        let mut workbench = Workbench {
+            state: AppState {
+                file_path: "playlist.riff".into(),
+                file_name: "playlist.riff".into(),
+                playlist_name: "test".into(),
+                queue: Vec::new(),
+                transient_current: None,
+                status: PlaybackStatus::Starting,
+                current_uri: None,
+                position_ms: 0,
+                volume: 0,
+                shuffle: false,
+                repeat: false,
+                message: String::new(),
+                view: View::NowPlaying,
+                theme,
+                git: None,
+                search: Default::default(),
+                lyrics: Default::default(),
+                hits: Default::default(),
+            },
+            editor: EditorState {
+                lines: vec![String::new()],
+                row: 0,
+                col: 0,
+                scroll: 0,
+                dirty: false,
+                clipboard: None,
+                message: String::new(),
+            },
+            artwork: HashMap::new(),
+            artwork_pending: HashMap::new(),
+            pending_volume: None,
+            last_volume_send: Instant::now(),
+            command: Some(String::new()),
+            command_suggestion: 0,
+            command_error: None,
+            visualizer: [0; 32],
+        };
+        let (controls, mut pending_controls) = mpsc::unbounded_channel();
+        workbench.command = Some("lyrics".into());
+        assert!(
+            !handle_command_key(
+                &mut workbench,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &controls
+            )
+            .unwrap()
+        );
+        assert_eq!(workbench.state.view, View::Lyrics);
+        assert!(matches!(
+            pending_controls.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        workbench.command = Some(String::new());
+        assert!(
+            !handle_command_key(
+                &mut workbench,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &controls,
+            )
+            .unwrap()
+        );
+        assert_eq!(workbench.command_suggestion, 1);
+        assert!(
+            !handle_command_key(
+                &mut workbench,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &controls,
+            )
+            .unwrap()
+        );
+        assert_eq!(workbench.state.view, View::Search);
+        let item = QueueItem {
+            title: "War Pigs".into(),
+            artist: "Black Sabbath".into(),
+            album: "Paranoid".into(),
+            version: None,
+            uri: "spotify:track:war-pigs".into(),
+            duration_ms: 470_000,
+            cover_id: None,
+            match_score: None,
+        };
+        workbench.state.search.results.push(item.clone());
+        workbench.state.queue.push(item);
+        handle_search_key(
+            &mut workbench,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &controls,
+        )
+        .unwrap();
+        assert_eq!(
+            workbench.state.message,
+            "copied track ID to terminal clipboard"
+        );
+        handle_search_key(
+            &mut workbench,
+            KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE),
+            &controls,
+        )
+        .unwrap();
+        assert_eq!(
+            workbench.state.message,
+            "copied track name to terminal clipboard"
+        );
+        workbench.command_suggestion = 1;
+        handle_key(
+            &mut workbench,
+            KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
+            &controls,
+        )
+        .unwrap();
+        assert_eq!(workbench.command_suggestion, 0);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut workbench)).unwrap();
+
+        let output = (0..40)
+            .map(|y| {
+                (0..100)
+                    .map(|x| {
+                        terminal
+                            .backend()
+                            .buffer()
+                            .cell((x, y))
+                            .map_or(" ", |cell| cell.symbol())
+                    })
+                    .collect::<String>()
+            })
+            .collect::<String>();
+        assert!(output.contains("Cmdline"));
+        assert!(output.contains("> █"));
+        let title_row = (0..40).find(|y| {
+            (0..100)
+                .map(|x| {
+                    terminal
+                        .backend()
+                        .buffer()
+                        .cell((x, *y))
+                        .map_or(" ", |cell| cell.symbol())
+                })
+                .collect::<String>()
+                .contains("Cmdline")
+        });
+        assert_eq!(title_row, Some(15));
+        let suggestion_row = (0..100)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, 18))
+                    .map_or(" ", |cell| cell.symbol())
+            })
+            .collect::<String>();
+        assert!(suggestion_row.contains("now"));
+        workbench.command = None;
+        workbench.visualizer = [u8::MAX; 32];
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| draw_metadata(frame, frame.area(), &workbench))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((95, 27)).unwrap().symbol(), "█");
+        assert_eq!(buffer.cell((50, 29)).unwrap().symbol(), "─");
+    }
+
+    #[test]
+    fn command_names_resolve_to_their_workbench_views() {
+        for (command, view) in [
+            ("now", View::NowPlaying),
+            ("nowplaying", View::NowPlaying),
+            ("now-playing", View::NowPlaying),
+            ("search", View::Search),
+            ("playlist", View::Playlist),
+            ("queue", View::Playlist),
+            ("lyrics", View::Lyrics),
+            ("editor", View::Editor),
+        ] {
+            assert_eq!(view_for_command(command), Some(view));
+        }
+        assert_eq!(view_for_command("unknown"), None);
+    }
+
+    #[test]
+    fn command_suggestions_filter_and_clipboard_uses_osc52() {
+        assert_eq!(command_suggestions("pl"), ["playlist"]);
+        assert_eq!(command_suggestions("NO"), ["now"]);
+        assert_eq!(clipboard_osc52("War Pigs"), "\\x1b]52;c;V2FyIFBpZ3M=\\x07");
+    }
+
+    #[tokio::test]
+    async fn ready_cached_queue_skips_the_startup_panel() {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let queue = resolve_queue_with_startup(
+            &mut terminal,
+            "cached-playlist",
+            Theme::named("riff").unwrap(),
+            async { Ok(Vec::new()) },
+            || Ok(false),
+        )
+        .await
+        .unwrap();
+
+        assert!(queue.is_empty());
+        let mut output = String::new();
+        for y in 0..24 {
+            for x in 0..80 {
+                output.push_str(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .cell((x, y))
+                        .map_or(" ", |cell| cell.symbol()),
+                );
+            }
+        }
+        assert!(!output.contains("Preparing playlist"));
+    }
+
+    #[tokio::test]
+    async fn slow_queue_shows_the_startup_panel() {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let queue = resolve_queue_with_startup(
+            &mut terminal,
+            "uncached-playlist",
+            Theme::named("riff").unwrap(),
+            async {
+                tokio::time::sleep(Duration::from_millis(110)).await;
+                Ok(Vec::new())
+            },
+            || Ok(false),
+        )
+        .await
+        .unwrap();
+
+        assert!(queue.is_empty());
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("Preparing playlist")
+        );
+    }
+
+    #[test]
+    fn startup_screen_has_one_clear_loading_message() {
+        let theme = Theme::named("riff").unwrap();
+        for (width, height) in [(80, 24), (160, 40)] {
+            let mut terminal =
+                Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_startup(frame, "coding-metal", theme))
+                .unwrap();
+
+            let output = (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| {
+                            terminal
+                                .backend()
+                                .buffer()
+                                .cell((x, y))
+                                .map_or(" ", |cell| cell.symbol())
+                        })
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            assert!(output.contains("Preparing playlist"));
+            assert!(output.contains("coding-metal"));
+            assert_eq!(output.matches("RIFF").count(), 1);
+            assert_eq!(output.matches("Loading track metadata").count(), 1);
+            assert!(
+                !["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
+                    .iter()
+                    .any(|frame| output.contains(frame))
+            );
+            assert_eq!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell(((width - 64) / 2, (height - 9) / 2))
+                    .unwrap()
+                    .symbol(),
+                "┌"
+            );
+        }
+    }
 
     #[test]
     fn transport_mode_switches_at_compact_breakpoint() {

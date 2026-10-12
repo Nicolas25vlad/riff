@@ -2,6 +2,29 @@
 
 All notable user-facing changes to Riff are documented here.
 
+## Unreleased
+
+### Fixed
+
+- persisted Spotify credentials across discovery, metadata and playback sessions to avoid repeated OAuth prompts;
+- moved OAuth out of the full-screen terminal and replaced the animated startup/ready sequence with one compact preparation panel.
+- reused cached track metadata and cover artwork across Workbench starts;
+- ranked remastered tracks by their original recording title and canonical album release.
+
+### Changed
+
+- refreshed the default Workbench palette and playback layout without changing its screens or controls;
+- added command-prompt navigation and scroll/follow controls for synchronized lyrics;
+- preloaded the next queued track as soon as the current track starts playing;
+- added command suggestions, ID/name clipboard shortcuts in Search, and normalized audio bars independent of playback volume;
+- replaced thin metadata visualizer lines with filled, background-free audio bars.
+- rendered logarithmic-frequency, CAVA-style bars at the bottom of the Now Playing metadata panel; delayed the startup panel until resolution takes over 100 ms and increased Search results to 50;
+- raised the visualizer refresh cap to 16 ms and smoothed bar attack/decay;
+
+- preserved Spotify's native result order in Workbench Search, reused exact-query results for one hour, and carried full track metadata into playback results;
+- added `radio true` to `.riff` playlists and automatic Spotify radio after single-track playback;
+- moved Cmdline into a centered popup with a selectable completion list below the input.
+
 ## 0.6.3
 
 ### Changed

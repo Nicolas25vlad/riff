@@ -13,11 +13,7 @@ pub fn rank_candidates(
     let normalized_query = normalize(query);
 
     for candidate in &mut candidates {
-        let title = candidate
-            .metadata
-            .get("title")
-            .map(String::as_str)
-            .unwrap_or("");
+        let title = recording_title(candidate);
         let artist = candidate
             .metadata
             .get("artist")
@@ -28,17 +24,29 @@ pub fn rank_candidates(
         } else {
             format!("{artist} {title}")
         };
-
-        let score = if exact {
-            let normalized_title = normalize(title);
-            let normalized_combined = normalize(&combined);
-            if normalized_query == normalized_title || normalized_query == normalized_combined {
-                100
-            } else {
-                0
-            }
+        let reversed_combined = if artist.is_empty() {
+            title.to_string()
         } else {
-            fuzzy_score(&normalized_query, &normalize(&combined), &normalize(title))
+            format!("{title} {artist}")
+        };
+
+        let normalized_title = normalize(title);
+        let normalized_combined = normalize(&combined);
+        let normalized_reversed_combined = normalize(&reversed_combined);
+        let score = if normalized_query == normalized_title
+            || normalized_query == normalized_combined
+            || normalized_query == normalized_reversed_combined
+        {
+            100
+        } else if exact {
+            0
+        } else {
+            fuzzy_score(
+                &normalized_query,
+                &normalized_combined,
+                &normalized_reversed_combined,
+                &normalized_title,
+            )
         };
 
         candidate.metadata.insert("match".into(), score.to_string());
@@ -74,15 +82,20 @@ pub fn rank_candidates(
     candidates
 }
 
-fn fuzzy_score(query: &str, combined: &str, title: &str) -> u8 {
+fn fuzzy_score(query: &str, combined: &str, reversed_combined: &str, title: &str) -> u8 {
     if query.is_empty() || combined.is_empty() {
         return 0;
     }
 
-    let combined_edit = normalized_edit_similarity(query, combined);
+    let combined_edit = normalized_edit_similarity(query, combined)
+        .max(normalized_edit_similarity(query, reversed_combined));
     let title_edit = normalized_edit_similarity(query, title);
     let token = token_similarity(query, combined);
-    let containment = if combined.contains(query) || query.contains(combined) {
+    let containment = if combined.contains(query)
+        || query.contains(combined)
+        || reversed_combined.contains(query)
+        || query.contains(reversed_combined)
+    {
         1.0
     } else {
         0.0
@@ -151,6 +164,26 @@ pub fn normalize(value: &str) -> String {
         .join(" ")
 }
 
+fn recording_title(candidate: &SearchCandidate) -> &str {
+    if let Some(title) = candidate.metadata.get("original_title") {
+        return title;
+    }
+
+    let title = candidate
+        .metadata
+        .get("title")
+        .map(String::as_str)
+        .unwrap_or("");
+    let Some((base, suffix)) = title.rsplit_once(" - ").or_else(|| title.rsplit_once(" (")) else {
+        return title;
+    };
+    if suffix.to_lowercase().contains("remaster") {
+        base
+    } else {
+        title
+    }
+}
+
 fn version_penalty(candidate: &SearchCandidate) -> u8 {
     let haystack = format!(
         "{} {} {}",
@@ -174,7 +207,8 @@ fn version_penalty(candidate: &SearchCandidate) -> u8 {
 
     [
         "live",
-        "remaster",
+        "remix",
+        "cover",
         "acoustic",
         "demo",
         "karaoke",
@@ -198,11 +232,7 @@ fn canonical_release_order(a: &SearchCandidate, b: &SearchCandidate) -> Ordering
 
 fn same_recording_identity(a: &SearchCandidate, b: &SearchCandidate) -> bool {
     let identity = |candidate: &SearchCandidate| {
-        let title = candidate
-            .metadata
-            .get("title")
-            .map(String::as_str)
-            .unwrap_or("");
+        let title = recording_title(candidate);
         let artist = candidate
             .metadata
             .get("artist")
@@ -291,6 +321,55 @@ mod tests {
     }
 
     #[test]
+    fn exact_title_and_artist_beats_cover_in_either_query_order() {
+        let mut cover = candidate("Signal Fire", "The Cover Band");
+        cover.metadata.insert("version".into(), "Cover".into());
+        let original = candidate("Signal Fire", "The Foundry");
+
+        for query in ["The Foundry Signal Fire", "Signal Fire The Foundry"] {
+            let ranked = rank_candidates(
+                query,
+                vec![cover.clone(), original.clone()],
+                false,
+                DEFAULT_THRESHOLD,
+            );
+
+            assert_eq!(ranked[0].metadata["artist"], "The Foundry");
+            assert_eq!(ranked[0].metadata["match"], "100");
+        }
+    }
+
+    #[test]
+    fn exact_title_beats_approximate_title_without_artist_inference() {
+        let approximate = candidate_with_release(
+            "Signal Fires",
+            "The Foundry",
+            "Popular Album",
+            2020,
+            100,
+            None,
+        );
+        let exact = candidate_with_release(
+            "Signal Fire",
+            "Another Artist",
+            "Less Popular Album",
+            1970,
+            1,
+            None,
+        );
+
+        let ranked = rank_candidates(
+            "Signal Fire",
+            vec![approximate, exact],
+            false,
+            DEFAULT_THRESHOLD,
+        );
+
+        assert_eq!(ranked[0].metadata["title"], "Signal Fire");
+        assert_eq!(ranked[0].metadata["match"], "100");
+    }
+
+    #[test]
     fn normalizes_punctuation_and_case() {
         assert_eq!(normalize("WAR-PIGS!!"), "war pigs");
     }
@@ -325,6 +404,35 @@ mod tests {
         assert_eq!(ranked[0].metadata["album_year"], "1972");
     }
 
+    #[test]
+    fn prefers_original_album_remaster_over_compilation_for_exact_title_search() {
+        let compilation = candidate_with_release(
+            "Paranoid",
+            "Black Sabbath",
+            "The Ultimate Collection",
+            2016,
+            62,
+            None,
+        );
+        let remaster = candidate_with_release(
+            "Paranoid - 2009 Remaster",
+            "Black Sabbath",
+            "Paranoid",
+            1970,
+            83,
+            Some("2009 Remaster"),
+        );
+
+        let ranked = rank_candidates(
+            "paranoid",
+            vec![compilation, remaster],
+            false,
+            DEFAULT_THRESHOLD,
+        );
+
+        assert_eq!(ranked[0].metadata["album"], "Paranoid");
+        assert_eq!(ranked[0].metadata["match"], "100");
+    }
     #[test]
     fn keeps_alternate_versions_but_ranks_clean_studio_release_first() {
         let live = candidate_with_release(

@@ -13,14 +13,29 @@ pub fn audio_sink_builder() -> Result<SinkBuilder, String> {
         });
     }
 
-    if is_wsl() && env::var_os("PULSE_SERVER").is_some() {
+    #[cfg(target_os = "linux")]
+    if pulse_server_available() {
         return audio_backend::find(Some("pulseaudio".to_string())).ok_or_else(|| {
-            "WSL/WSLg was detected, but the PulseAudio backend is not available in this build"
-                .to_string()
+            "the PulseAudio-compatible backend is not available in this build".to_string()
         });
     }
 
     audio_backend::find(None).ok_or_else(|| "no supported audio backend was found".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn pulse_server_available() -> bool {
+    env::var_os("PULSE_SERVER").is_some()
+        || env::var_os("XDG_RUNTIME_DIR").is_some_and(|runtime_dir| {
+            is_pulse_socket(&PathBuf::from(runtime_dir).join("pulse/native"))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn is_pulse_socket(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+
+    fs::metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
 }
 
 pub fn riff_cache_dir() -> Result<PathBuf, String> {
@@ -95,5 +110,25 @@ mod tests {
         if !cfg!(target_os = "linux") {
             assert!(!is_wsl());
         }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pulse_socket_detection_requires_a_unix_socket() {
+        use std::os::unix::net::UnixListener;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let path = env::temp_dir().join(format!(
+            "riff-pulse-{}-{}.sock",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!is_pulse_socket(&path));
+        let listener = UnixListener::bind(&path).unwrap();
+        assert!(is_pulse_socket(&path));
+        drop(listener);
+        fs::remove_file(path).unwrap();
     }
 }

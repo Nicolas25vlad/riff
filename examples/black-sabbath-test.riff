@@ -1,0 +1,7 @@
+playlist "black-sabbath-test" {
+    track "Black Sabbath - War Pigs"
+    track "Black Sabbath - Paranoid"
+    track "Black Sabbath - Iron Man"
+    track "Black Sabbath - Children of the Grave"
+    track "Metallica - Master Of Puppets" id="spotify:track:2MuWTIM3b0YEAskbeeFE1i"
+}

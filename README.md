@@ -76,7 +76,7 @@ The Workbench is the primary Riff experience.
 | View | What it does |
 | --- | --- |
 | **Now Playing** | album artwork, track metadata, progress and transport controls |
-| **Search** | Spotify search, fuzzy ranking, exact IDs and direct playback |
+| **Search** | Spotify results in native order, track IDs and direct playback |
 | **Playlist** | shows the queue represented by the active `.riff` file |
 | **Lyrics** | synchronized lyrics when Spotify provides them |
 | **Editor** | built-in nano-like editor for the current `.riff` file |
@@ -88,8 +88,9 @@ The interface also includes:
 - Git branch and dirty-state context;
 - responsive layouts;
 - Kitty, Sixel, iTerm2 and Unicode artwork fallbacks;
-- Riff, Kanagawa, Catppuccin and monochrome themes;
-- terminal-safe logging rules so background output does not corrupt the TUI.
+- Riff’s dark Catppuccin-inspired default, Kanagawa, Catppuccin and monochrome themes;
+- terminal-safe logging rules so background output does not corrupt the TUI;
+- cached track resolution, persistent Spotify audio-file cache and next-track preloading during playback.
 
 ### Core controls
 
@@ -99,11 +100,18 @@ n / Right    Next track
 p / Left     Previous track
 h / l        Previous / next aliases
 1..5         Switch Workbench views
+:nowplaying  Open Now Playing
+:search      Open Search
+:playlist    Open Playlist (:queue also works)
+:lyrics      Open Lyrics
+:editor      Open the .riff editor
+:quit        Leave the Workbench
 F6           Cycle theme
-q / Esc      Leave the Workbench
 ```
 
-Mouse behavior is contextual: scrolling Search navigates results, while scrolling over the volume control changes volume. Unrelated scrolling does not alter playback.
+Use `:` to open a centered Cmdline popup. Type to filter command suggestions, use ↑/↓ to select, Enter to accept, and Esc to close.
+
+Mouse behavior is contextual: scrolling Search navigates results, scrolling over Lyrics scrolls the text, and scrolling over the volume control changes volume. In Lyrics, `f` restores automatic follow of the current line. Unrelated scrolling does not alter playback.
 
 The built-in editor follows familiar nano-style shortcuts such as `Ctrl+S` to save, `Ctrl+K` to cut a line, `Ctrl+U` to paste and `Ctrl+X` to leave the editor.
 
@@ -137,6 +145,20 @@ playlist "coding-metal" {
 ```
 
 Use `riff search`, `riff inspect-track` or `riff pick` to inspect recordings and generate pinned DSL.
+
+## Automatic radio
+
+A single-track playlist and a track started directly from Search continue with Spotify radio automatically. For a multi-track playlist, add `radio true` to request radio after its last track:
+
+```riff
+playlist "coding-metal" {
+    radio true
+    track "Black Sabbath - War Pigs"
+    track "Dio - Holy Diver"
+}
+```
+
+If Spotify does not return a station, playback ends normally.
 
 ## Music as code
 

@@ -50,8 +50,8 @@ if ! grep -Fq 'resolve_queue_with_startup' src/workbench/mod.rs; then
   fail 'Workbench must surface playlist resolution through the startup UI.'
 fi
 
-if ! grep -Fq 'STARTUP_FRAMES' src/workbench/mod.rs; then
-  fail 'Workbench startup must retain a visible animated loading state.'
+if ! grep -Fq 'Preparing playlist' src/workbench/mod.rs; then
+  fail 'Workbench startup must render a single, visible preparation state.'
 fi
 
 echo 'TUI quality invariants passed.'

@@ -121,6 +121,7 @@ pub struct Track {
 pub struct Playlist {
     pub name: String,
     pub tracks: Vec<Track>,
+    pub radio: bool,
 }
 
 impl Playlist {
@@ -136,6 +137,8 @@ impl Playlist {
 
         let name = parse_playlist_header(header)?;
         let mut tracks = Vec::new();
+        let mut radio = false;
+        let mut radio_declared = false;
         let mut closed = false;
 
         for line in lines.by_ref() {
@@ -144,10 +147,22 @@ impl Playlist {
                 break;
             }
 
+            if let Some(value) = line.strip_prefix("radio ") {
+                if radio_declared {
+                    return Err(RiffError::Parse("radio may only be declared once".into()));
+                }
+                radio = match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(RiffError::Parse("radio must be `true` or `false`".into())),
+                };
+                radio_declared = true;
+                continue;
+            }
+
             let value = line
                 .strip_prefix("track ")
                 .ok_or_else(|| RiffError::Parse(format!("unsupported statement: `{line}`")))?;
-
             tracks.push(parse_track(value)?);
         }
 
@@ -164,6 +179,7 @@ impl Playlist {
         Ok(Self {
             name: name.to_string(),
             tracks,
+            radio,
         })
     }
 }
@@ -289,11 +305,12 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
                 .collect::<Vec<_>>()
                 .join("\n");
 
+            let radio_setting = if playlist.radio { "\nradio: true" } else { "" };
             if body.is_empty() {
-                Ok(format!("{}\n0 tracks", playlist.name))
+                Ok(format!("{}\n0 tracks{radio_setting}", playlist.name))
             } else {
                 Ok(format!(
-                    "{}\n{} tracks\n\n{}",
+                    "{}\n{} tracks{radio_setting}\n\n{}",
                     playlist.name,
                     playlist.tracks.len(),
                     body
@@ -315,6 +332,7 @@ pub async fn run(command: Command) -> Result<String, RiffError> {
             );
 
             let options = player::PlayerOptions {
+                auto_radio: playlist.radio || playlist.tracks.len() == 1,
                 tracks: playlist
                     .tracks
                     .into_iter()
@@ -487,6 +505,28 @@ mod tests {
         assert_eq!(playlist.tracks.len(), 2);
         assert_eq!(playlist.tracks[0].label, "Black Sabbath - War Pigs");
         assert_eq!(playlist.tracks[0].id, None);
+        assert!(!playlist.radio);
+    }
+
+    #[test]
+    fn parses_optional_radio_setting_and_rejects_duplicates() {
+        let playlist =
+            Playlist::parse("playlist \"radio\" {\nradio true\ntrack \"Seed\"\n}").unwrap();
+        assert!(playlist.radio);
+
+        assert!(Playlist::parse("playlist \"radio\" {\nradio true\nradio false\n}").is_err());
+        assert!(Playlist::parse("playlist \"radio\" {\nradio yes\n}").is_err());
+    }
+    #[tokio::test]
+    async fn inspect_reports_radio_enabled() {
+        let path =
+            std::env::temp_dir().join(format!("riff-radio-inspect-{}.riff", std::process::id()));
+        fs::write(&path, "playlist \"radio\" {\nradio true\ntrack \"Seed\"\n}").unwrap();
+
+        let output = run(Command::Inspect(path.clone())).await.unwrap();
+
+        fs::remove_file(path).unwrap();
+        assert!(output.contains("radio: true"));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 
 use super::{git_context::GitContext, theme::Theme};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueueItem {
     pub title: String,
     pub artist: String,
@@ -72,16 +72,6 @@ impl View {
         Self::Editor,
     ];
 
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::NowPlaying => "Now Playing",
-            Self::Search => "Search",
-            Self::Playlist => "Playlist",
-            Self::Lyrics => "Lyrics",
-            Self::Editor => "Editor",
-        }
-    }
-
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|view| *view == self).unwrap_or(0)
     }
@@ -140,6 +130,8 @@ pub struct LyricsState {
     pub lines: Vec<LyricsLine>,
     pub loading: bool,
     pub error: Option<String>,
+    pub scroll: Option<usize>,
+    pub visible_rows: usize,
 }
 
 impl LyricsState {
@@ -153,16 +145,33 @@ impl LyricsState {
                     .then_some(index)
             })
     }
+
+    pub fn scroll_offset(&self, position_ms: u32) -> usize {
+        let max = self.lines.len().saturating_sub(self.visible_rows);
+        self.scroll
+            .unwrap_or_else(|| {
+                self.active_line(position_ms)
+                    .unwrap_or(0)
+                    .saturating_sub(self.visible_rows / 2)
+            })
+            .min(max)
+    }
+
+    pub fn scroll_by(&mut self, delta: isize, position_ms: u32) {
+        let max = self.lines.len().saturating_sub(self.visible_rows);
+        let current = self.scroll_offset(position_ms);
+        self.scroll = Some((current as isize + delta).clamp(0, max as isize) as usize);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct HitMap {
-    pub tabs: Vec<(View, Rect)>,
     pub progress: Option<Rect>,
     pub volume: Option<Rect>,
     pub previous: Option<Rect>,
     pub toggle: Option<Rect>,
     pub next: Option<Rect>,
+    pub lyrics: Option<Rect>,
     pub search_rows: Vec<(usize, Rect)>,
 }
 
@@ -205,5 +214,42 @@ impl AppState {
 
     pub fn duration_ms(&self) -> u32 {
         self.current().map(|item| item.duration_ms).unwrap_or(0)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lyrics() -> LyricsState {
+        LyricsState {
+            lines: (0..10)
+                .map(|index| LyricsLine {
+                    start_ms: index * 1_000,
+                    end_ms: (index + 1) * 1_000,
+                    text: format!("line {index}"),
+                })
+                .collect(),
+            visible_rows: 4,
+            ..LyricsState::default()
+        }
+    }
+
+    #[test]
+    fn lyric_follow_centers_active_line_and_manual_scroll_stops_following() {
+        let mut lyrics = lyrics();
+        assert_eq!(lyrics.scroll_offset(6_000), 4);
+
+        lyrics.scroll_by(-1, 6_000);
+        assert_eq!(lyrics.scroll_offset(6_000), 3);
+        assert_eq!(lyrics.scroll_offset(8_000), 3);
+    }
+
+    #[test]
+    fn lyric_manual_scroll_clamps_at_both_ends() {
+        let mut lyrics = lyrics();
+        lyrics.scroll_by(-100, 6_000);
+        assert_eq!(lyrics.scroll_offset(6_000), 0);
+        lyrics.scroll_by(100, 6_000);
+        assert_eq!(lyrics.scroll_offset(6_000), 6);
     }
 }
